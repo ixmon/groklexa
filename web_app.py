@@ -669,7 +669,7 @@ def infer_text():
         protocol = api_config.get('protocol', 'openai_compatible')
         model = api_config.get('model', 'grok-3')
         
-        logger.debug(f"Using inference provider: {provider}, protocol: {protocol}")
+        logger.info(f"Using inference: provider={provider}, model={model}")
         
         # Build messages array
         messages = []
