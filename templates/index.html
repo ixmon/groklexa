@@ -2102,6 +2102,12 @@
                         sileroAudioChunks = [];
                         audioPreBuffer = [];
                         isProcessing = false;
+                        // Create fresh recorder for next session
+                        sileroRecorder = null;
+                        if (wakeWordState === 'active') {
+                            initSileroRecorder();
+                            startPreBufferRecording();
+                        }
                         return;
                     }
                     
@@ -2128,11 +2134,13 @@
                         isProcessing = false;
                     }
                     
-                    // Restart pre-buffer for next utterance
-                    if (wakeWordState === 'active' && sileroRecorder && sileroRecorder.state === 'inactive') {
+                    // Create FRESH MediaRecorder for next utterance (avoids WebM container issues)
+                    sileroRecorder = null;
+                    if (wakeWordState === 'active') {
                         audioPreBuffer = [];
-                        sileroRecorder.start(100);
-                        console.log('📼 Pre-buffer recording restarted');
+                        initSileroRecorder();
+                        startPreBufferRecording();
+                        console.log('📼 Fresh recorder created for next utterance');
                     }
                     
                     if (wakeWordState === 'active' && !isProcessing) {
@@ -2157,18 +2165,24 @@
                 sileroSpeechStartTime = Date.now();
                 
                 // Copy pre-buffer to audio chunks (captures the first word!)
-                sileroAudioChunks = [...audioPreBuffer];
-                console.log(`📦 Pre-buffer: ${audioPreBuffer.length} chunks included`);
-                
-                // Initialize recorder if needed (it might already be recording for pre-buffer)
-                if (!sileroRecorder) {
-                    initSileroRecorder();
+                // Only use pre-buffer if recorder was already running (same session)
+                if (sileroRecorder && sileroRecorder.state === 'recording') {
+                    sileroAudioChunks = [...audioPreBuffer];
+                    console.log(`📦 Pre-buffer: ${audioPreBuffer.length} chunks included`);
+                } else {
+                    // Recorder not running - start fresh (no pre-buffer)
+                    sileroAudioChunks = [];
+                    console.log('⚠️ Recorder was not running, no pre-buffer available');
+                    
+                    // Initialize and start recorder
+                    if (!sileroRecorder) {
+                        initSileroRecorder();
+                    }
+                    if (sileroRecorder && sileroRecorder.state === 'inactive') {
+                        sileroRecorder.start(100);
+                    }
                 }
                 
-                // Start recording if not already (shouldn't happen with continuous pre-buffer)
-                if (sileroRecorder && sileroRecorder.state === 'inactive') {
-                    sileroRecorder.start(100);  // Collect chunks every 100ms
-                }
                 showStatus('🎤 Listening...', 'speaking');
             } else if (!isSpeaking && sileroWasSpeaking) {
                 // Speech ended!
@@ -2189,6 +2203,11 @@
             if (!wakeWordStream) {
                 console.error('Cannot start pre-buffer - no wake word stream');
                 return;
+            }
+            
+            // Create recorder if it doesn't exist
+            if (!sileroRecorder) {
+                initSileroRecorder();
             }
             
             // If recorder exists and is inactive, start it for pre-buffering
