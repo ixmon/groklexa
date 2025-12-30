@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# SSL Certificates (private keys should not be committed)
+certs/*.pem
+!certs/.gitkeep
+
+# Environment variables
+.env
+.env.local
+
+# API Configuration (contains secrets)
+config/api_settings.json
+!config/api_settings.example.json
+
+# OS
+.DS_Store
+Thumbs.db

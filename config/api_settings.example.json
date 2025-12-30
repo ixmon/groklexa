@@ -1,0 +1,31 @@
+{
+  "mode": "single",
+  "single": {
+    "provider": "xai_realtime",
+    "url": "wss://api.x.ai/v1/realtime",
+    "auth": "",
+    "protocol": "xai_realtime"
+  },
+  "transcription": {
+    "provider": "browser",
+    "url": "",
+    "auth": "",
+    "protocol": "browser_speech_api",
+    "options": {}
+  },
+  "inference": {
+    "provider": "grok",
+    "url": "https://api.x.ai/v1/chat/completions",
+    "auth": "",
+    "protocol": "openai_compatible",
+    "model": "grok-3"
+  },
+  "synthesis": {
+    "provider": "grok",
+    "url": "wss://api.x.ai/v1/realtime",
+    "auth": "",
+    "protocol": "xai_realtime",
+    "voice": "Ara"
+  }
+}
+
