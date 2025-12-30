@@ -1825,6 +1825,13 @@
                 initSileroRecorder();
             }
             
+            // Start browser transcription if using separate APIs with browser transcription
+            if (currentApiConfig?.mode === 'separate' && 
+                currentApiConfig?.transcription?.provider === 'browser') {
+                console.log('[Groklexa] Starting parallel browser transcription');
+                startBrowserTranscription();
+            }
+            
             // Reset state
             sileroWasSpeaking = false;
             sileroAudioChunks = [];
@@ -1843,6 +1850,9 @@
                 currentAbortController.abort();
                 currentAbortController = null;
             }
+            
+            // Stop browser transcription if running
+            stopBrowserTranscription();
             
             isProcessing = false;
             isSpeaking = false;
@@ -2500,55 +2510,85 @@
         }
         
         // Browser-based transcription using Web Speech API
-        function transcribeWithWebSpeech(audioBlob) {
-            return new Promise((resolve, reject) => {
-                if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-                    reject(new Error('Web Speech API not supported in this browser'));
-                    return;
+        // This runs in parallel with recording, storing results as they come
+        let browserTranscriptBuffer = '';
+        let browserRecognition = null;
+        
+        function startBrowserTranscription() {
+            if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+                console.warn('[Groklexa] Web Speech API not supported');
+                return false;
+            }
+            
+            if (browserRecognition) {
+                return true; // Already running
+            }
+            
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            browserRecognition = new SpeechRecognition();
+            
+            browserRecognition.continuous = true;
+            browserRecognition.interimResults = false;
+            browserRecognition.lang = 'en-US';
+            
+            browserTranscriptBuffer = '';
+            
+            browserRecognition.onresult = (event) => {
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    if (event.results[i].isFinal) {
+                        browserTranscriptBuffer += event.results[i][0].transcript + ' ';
+                        console.log('[Groklexa] Browser transcription (live):', event.results[i][0].transcript);
+                    }
                 }
-                
-                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                const recognition = new SpeechRecognition();
-                
-                recognition.continuous = false;
-                recognition.interimResults = false;
-                recognition.lang = 'en-US';
-                
-                let finalTranscript = '';
-                
-                recognition.onresult = (event) => {
-                    for (let i = event.resultIndex; i < event.results.length; i++) {
-                        if (event.results[i].isFinal) {
-                            finalTranscript += event.results[i][0].transcript;
-                        }
-                    }
-                };
-                
-                recognition.onerror = (event) => {
+            };
+            
+            browserRecognition.onerror = (event) => {
+                if (event.error !== 'no-speech' && event.error !== 'aborted') {
                     console.error('[Groklexa] Speech recognition error:', event.error);
-                    if (event.error === 'no-speech') {
-                        resolve(''); // No speech detected, not an error
-                    } else {
-                        reject(new Error('Speech recognition error: ' + event.error));
-                    }
-                };
-                
-                recognition.onend = () => {
-                    console.log('[Groklexa] Speech recognition ended, transcript:', finalTranscript);
-                    resolve(finalTranscript);
-                };
-                
-                // Note: Web Speech API listens to microphone directly, not audio blobs
-                // For blob-based transcription, we'd need a server-side solution
-                // This implementation starts listening for live speech
-                console.log('[Groklexa] Starting Web Speech recognition (live microphone)');
-                recognition.start();
-                
-                // Auto-stop after a reasonable timeout
-                setTimeout(() => {
-                    recognition.stop();
-                }, 10000);
-            });
+                }
+            };
+            
+            browserRecognition.onend = () => {
+                console.log('[Groklexa] Browser recognition ended');
+                // Restart if still in active mode
+                if (wakeWordState === 'active' && currentApiConfig?.mode === 'separate' && 
+                    currentApiConfig?.transcription?.provider === 'browser') {
+                    setTimeout(() => {
+                        if (wakeWordState === 'active' && browserRecognition) {
+                            try {
+                                browserRecognition.start();
+                            } catch (e) {
+                                // Already started or other error
+                            }
+                        }
+                    }, 100);
+                }
+            };
+            
+            console.log('[Groklexa] Starting continuous browser transcription');
+            browserRecognition.start();
+            return true;
+        }
+        
+        function stopBrowserTranscription() {
+            if (browserRecognition) {
+                browserRecognition.stop();
+                browserRecognition = null;
+            }
+        }
+        
+        function getBrowserTranscript() {
+            const transcript = browserTranscriptBuffer.trim();
+            browserTranscriptBuffer = '';  // Clear for next utterance
+            return transcript;
+        }
+        
+        // Legacy function for compatibility
+        function transcribeWithWebSpeech(audioBlob) {
+            // Just return whatever we captured during recording
+            const transcript = getBrowserTranscript();
+            console.log('[Groklexa] Retrieved browser transcript:', transcript);
+            return Promise.resolve(transcript);
         }
         
         // Browser-based speech synthesis
@@ -2581,20 +2621,24 @@
                 };
                 
                 utterance.onerror = (event) => {
+                    isAISpeaking = false;
                     console.error('[Groklexa] Speech synthesis error:', event.error);
                     reject(new Error('Speech synthesis error: ' + event.error));
                 };
                 
-                // Pause Silero VAD while speaking
-                isAISpeaking = true;
-                
-                window.speechSynthesis.speak(utterance);
+                utterance.onstart = () => {
+                    // Pause VAD and browser transcription while speaking
+                    isAISpeaking = true;
+                    console.log('[Groklexa] Browser synthesis started - pausing VAD');
+                };
                 
                 utterance.onend = () => {
                     isAISpeaking = false;
-                    console.log('[Groklexa] Speech synthesis complete');
+                    console.log('[Groklexa] Speech synthesis complete - resuming VAD');
                     resolve();
                 };
+                
+                window.speechSynthesis.speak(utterance);
             });
         }
 

@@ -537,15 +537,19 @@ def infer_text():
         messages.append({'role': 'user', 'content': text})
         
         # Call the appropriate API
-        if protocol == 'openai_compatible':
+        # Normalize protocol names (grok, openai, ollama all use OpenAI-compatible format)
+        openai_compatible_protocols = ['openai_compatible', 'grok', 'openai', 'ollama', 'xai_realtime']
+        
+        if protocol in openai_compatible_protocols:
             response_text = call_openai_compatible(url, auth, model, messages)
-        elif protocol == 'anthropic_messages':
+        elif protocol in ['anthropic_messages', 'anthropic']:
             response_text = call_anthropic(url, auth, model, messages)
         elif protocol == 'browser_speech_api':
             # This shouldn't be called server-side
             return jsonify({'error': 'Browser Speech API should be used client-side'}), 400
         else:
-            return jsonify({'error': f'Unknown protocol: {protocol}'}), 400
+            logger.warning(f"Unknown protocol '{protocol}', trying OpenAI-compatible")
+            response_text = call_openai_compatible(url, auth, model, messages)
         
         logger.info(f"Inference response: {response_text[:100]}...")
         
