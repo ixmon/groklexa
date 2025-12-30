@@ -376,6 +376,23 @@
             border: 1px solid rgba(156, 139, 122, 0.2);
         }
         
+        .status-icon {
+            width: 16px;
+            height: 16px;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+        
+        .status-icon.spin {
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
         @keyframes recordingPulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.7; }
@@ -1472,9 +1489,29 @@
         // ========== HELPER FUNCTIONS ==========
         
         function showStatus(message, type = 'info') {
-            status.textContent = message;
+            // Support Lucide icons in status messages
+            // Replace emoji patterns with Lucide icons
+            const iconMap = {
+                '🤔': '<i data-lucide="brain" class="status-icon"></i>',
+                '🎤': '<i data-lucide="mic" class="status-icon"></i>',
+                '🎧': '<i data-lucide="headphones" class="status-icon"></i>',
+                '🔊': '<i data-lucide="volume-2" class="status-icon"></i>',
+                '⏳': '<i data-lucide="loader-2" class="status-icon spin"></i>',
+            };
+            
+            let processedMessage = message;
+            for (const [emoji, icon] of Object.entries(iconMap)) {
+                processedMessage = processedMessage.replace(emoji, icon);
+            }
+            
+            status.innerHTML = processedMessage;
             status.className = 'status ' + type;
             status.classList.remove('hidden');
+            
+            // Re-render Lucide icons
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
         }
 
         function hideStatus() {

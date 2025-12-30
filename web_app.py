@@ -1024,8 +1024,9 @@ def tool_search_x(query: str, auth: str) -> str:
         client = Client(api_key=auth)
         
         # Create a chat session with x_search tool
+        # Note: Server-side tools require grok-4 family models
         chat = client.chat.create(
-            model="grok-3-fast",  # Use fast model for search
+            model="grok-4-fast",
             tools=[x_search()],
         )
         
@@ -1064,8 +1065,9 @@ def tool_search_web(query: str, auth: str) -> str:
         client = Client(api_key=auth)
         
         # Create a chat session with web_search tool
+        # Note: Server-side tools require grok-4 family models
         chat = client.chat.create(
-            model="grok-3-fast",  # Use fast model for search
+            model="grok-4-fast",
             tools=[web_search()],
         )
         
