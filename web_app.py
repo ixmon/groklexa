@@ -7,9 +7,19 @@ import ssl
 import tempfile
 import asyncio
 import json
+import logging
+import requests
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from groklexa import XAIVoiceWebSocketWrapper
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger('groklexa')
 
 app = Flask(__name__, static_folder='static')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
@@ -222,7 +232,6 @@ def test_connection():
             
         elif protocol in ['openai_compatible', 'anthropic_messages']:
             # Test REST endpoint with a simple request
-            import requests
             headers = {"Authorization": f"Bearer {auth}"}
             if protocol == 'anthropic_messages':
                 headers = {
@@ -295,9 +304,9 @@ def infer_websocket():
         if 'conversation_history' in request.form:
             try:
                 conversation_history = json.loads(request.form['conversation_history'])
-                print(f"Received conversation history: {len(conversation_history)} messages")
+                logger.info(f"Received conversation history: {len(conversation_history)} messages")
             except json.JSONDecodeError:
-                print("Failed to parse conversation history")
+                logger.warning("Failed to parse conversation history")
         
         # Check if audio file is in request
         if 'audio' not in request.files:
@@ -315,10 +324,11 @@ def infer_websocket():
         try:
             # Perform inference using WebSocket
             async def run_inference():
-                print(f"Starting WebSocket inference with voice: {voice}")
+                logger.info(f"Starting WebSocket inference with voice: {voice}")
                 wrapper = XAIVoiceWebSocketWrapper(voice=voice)
                 result = await wrapper.infer(tmp_path, conversation_history=conversation_history)
-                print(f"WebSocket inference complete: {result}")
+                logger.info(f"WebSocket inference complete")
+                logger.debug(f"Result keys: {result.keys() if result else 'None'}")
                 return result
             
             # Run async function in event loop
@@ -329,7 +339,7 @@ def infer_websocket():
                 'result': result
             })
         except Exception as e:
-            print(f"WebSocket inference error: {e}")
+            logger.error(f"WebSocket inference error: {e}", exc_info=True)
             return jsonify({
                 'success': False,
                 'error': str(e)
@@ -342,7 +352,323 @@ def infer_websocket():
                 pass
     
     except Exception as e:
-        print(f"Request error: {e}")
+        logger.error(f"Request error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+# ========== SEPARATE API ENDPOINTS ==========
+
+@app.route('/api/transcribe', methods=['POST'])
+def transcribe():
+    """Transcribe audio to text using configured transcription API."""
+    try:
+        if 'audio' not in request.files:
+            return jsonify({'error': 'No audio file provided'}), 400
+        
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({'error': 'No audio file selected'}), 400
+        
+        logger.info(f"Transcription request: {audio_file.filename}")
+        
+        # Load config
+        config = load_config()
+        mode = config.get('mode', 'single')
+        
+        if mode == 'single':
+            api_config = config.get('single', {})
+        else:
+            api_config = config.get('transcription', {})
+        
+        provider = api_config.get('provider', 'browser')
+        
+        if provider == 'browser':
+            # Browser-based transcription should be handled client-side
+            return jsonify({
+                'success': True,
+                'use_browser': True,
+                'message': 'Use browser Web Speech API for transcription'
+            })
+        
+        url = api_config.get('url', '')
+        auth = api_config.get('auth', '')
+        
+        # Save audio temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as tmp_file:
+            audio_file.save(tmp_file.name)
+            tmp_path = tmp_file.name
+        
+        try:
+            if provider in ['whisper', 'openai_whisper']:
+                transcription = transcribe_with_whisper(url or 'https://api.openai.com/v1/audio/transcriptions', 
+                                                         auth, tmp_path)
+            elif provider == 'grok':
+                # Grok uses the same Whisper-compatible endpoint
+                transcription = transcribe_with_whisper(url or 'https://api.x.ai/v1/audio/transcriptions',
+                                                         auth, tmp_path)
+            elif provider == 'google':
+                transcription = transcribe_with_google(url, auth, tmp_path)
+            else:
+                # Custom provider - assume Whisper-compatible
+                transcription = transcribe_with_whisper(url, auth, tmp_path)
+            
+            logger.info(f"Transcription result: {transcription[:100]}...")
+            
+            return jsonify({
+                'success': True,
+                'transcription': transcription
+            })
+            
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+                
+    except Exception as e:
+        logger.error(f"Transcription error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+def transcribe_with_whisper(url: str, auth: str, audio_path: str) -> str:
+    """Transcribe audio using OpenAI Whisper-compatible API."""
+    logger.debug(f"Calling Whisper API: {url}")
+    
+    headers = {
+        'Authorization': f'Bearer {auth}'
+    }
+    
+    with open(audio_path, 'rb') as f:
+        files = {
+            'file': (os.path.basename(audio_path), f, 'audio/webm'),
+            'model': (None, 'whisper-1')
+        }
+        response = requests.post(url, headers=headers, files=files, timeout=60)
+    
+    response.raise_for_status()
+    data = response.json()
+    return data.get('text', '')
+
+
+def transcribe_with_google(url: str, auth: str, audio_path: str) -> str:
+    """Transcribe audio using Google Cloud Speech-to-Text API."""
+    logger.debug(f"Calling Google Speech API: {url}")
+    
+    import base64
+    
+    headers = {
+        'Authorization': f'Bearer {auth}',
+        'Content-Type': 'application/json'
+    }
+    
+    with open(audio_path, 'rb') as f:
+        audio_content = base64.b64encode(f.read()).decode('utf-8')
+    
+    payload = {
+        'config': {
+            'encoding': 'WEBM_OPUS',
+            'sampleRateHertz': 48000,
+            'languageCode': 'en-US'
+        },
+        'audio': {
+            'content': audio_content
+        }
+    }
+    
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    
+    data = response.json()
+    results = data.get('results', [])
+    if results:
+        return results[0].get('alternatives', [{}])[0].get('transcript', '')
+    return ''
+
+
+@app.route('/api/infer/text', methods=['POST'])
+def infer_text():
+    """Text-based inference - takes transcribed text, returns AI response."""
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        text = data.get('text', '')
+        conversation_history = data.get('conversation_history', [])
+        
+        if not text:
+            return jsonify({'error': 'No text provided'}), 400
+        
+        logger.info(f"Text inference request: {text[:100]}...")
+        
+        # Load config to determine which provider to use
+        config = load_config()
+        mode = config.get('mode', 'single')
+        
+        if mode == 'single':
+            # Use single API config
+            api_config = config.get('single', {})
+        else:
+            # Use separate inference config
+            api_config = config.get('inference', {})
+        
+        provider = api_config.get('provider', 'grok')
+        url = api_config.get('url', '')
+        auth = api_config.get('auth', '')
+        protocol = api_config.get('protocol', 'openai_compatible')
+        model = api_config.get('model', 'grok-3')
+        
+        logger.debug(f"Using inference provider: {provider}, protocol: {protocol}")
+        
+        # Build messages array
+        messages = []
+        for msg in conversation_history:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+            messages.append({'role': role, 'content': content})
+        
+        # Add current message
+        messages.append({'role': 'user', 'content': text})
+        
+        # Call the appropriate API
+        if protocol == 'openai_compatible':
+            response_text = call_openai_compatible(url, auth, model, messages)
+        elif protocol == 'anthropic_messages':
+            response_text = call_anthropic(url, auth, model, messages)
+        elif protocol == 'browser_speech_api':
+            # This shouldn't be called server-side
+            return jsonify({'error': 'Browser Speech API should be used client-side'}), 400
+        else:
+            return jsonify({'error': f'Unknown protocol: {protocol}'}), 400
+        
+        logger.info(f"Inference response: {response_text[:100]}...")
+        
+        return jsonify({
+            'success': True,
+            'response': response_text
+        })
+        
+    except Exception as e:
+        logger.error(f"Text inference error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+def call_openai_compatible(url: str, auth: str, model: str, messages: list) -> str:
+    """Call an OpenAI-compatible API (Grok, OpenAI, Ollama, etc.)."""
+    logger.debug(f"Calling OpenAI-compatible API: {url}, model: {model}")
+    
+    headers = {
+        'Authorization': f'Bearer {auth}',
+        'Content-Type': 'application/json'
+    }
+    
+    payload = {
+        'model': model,
+        'messages': messages
+    }
+    
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    
+    data = response.json()
+    return data['choices'][0]['message']['content']
+
+
+def call_anthropic(url: str, auth: str, model: str, messages: list) -> str:
+    """Call Anthropic's Messages API."""
+    logger.debug(f"Calling Anthropic API: {url}, model: {model}")
+    
+    headers = {
+        'x-api-key': auth,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json'
+    }
+    
+    # Convert to Anthropic format (system message separate)
+    system_msg = None
+    anthropic_messages = []
+    
+    for msg in messages:
+        if msg['role'] == 'system':
+            system_msg = msg['content']
+        else:
+            anthropic_messages.append({
+                'role': msg['role'],
+                'content': msg['content']
+            })
+    
+    payload = {
+        'model': model,
+        'max_tokens': 4096,
+        'messages': anthropic_messages
+    }
+    
+    if system_msg:
+        payload['system'] = system_msg
+    
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    
+    data = response.json()
+    return data['content'][0]['text']
+
+
+@app.route('/api/synthesize', methods=['POST'])
+def synthesize():
+    """Text-to-speech synthesis - takes text, returns audio."""
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        text = data.get('text', '')
+        if not text:
+            return jsonify({'error': 'No text provided'}), 400
+        
+        logger.info(f"Synthesis request: {text[:100]}...")
+        
+        # Load config
+        config = load_config()
+        mode = config.get('mode', 'single')
+        
+        if mode == 'single':
+            api_config = config.get('single', {})
+        else:
+            api_config = config.get('synthesis', {})
+        
+        provider = api_config.get('provider', 'grok')
+        protocol = api_config.get('protocol', 'xai_realtime')
+        voice = api_config.get('voice', 'Ara')
+        
+        if protocol == 'browser_speech_api':
+            # Return text for client-side synthesis
+            return jsonify({
+                'success': True,
+                'use_browser': True,
+                'text': text
+            })
+        
+        # For XAI realtime, we need to use WebSocket to get audio
+        # This is a simplified version - the full audio generation
+        # would require the WebSocket wrapper
+        logger.warning("Server-side synthesis for separate APIs not yet implemented")
+        return jsonify({
+            'success': True,
+            'use_browser': True,  # Fallback to browser
+            'text': text
+        })
+        
+    except Exception as e:
+        logger.error(f"Synthesis error: {e}", exc_info=True)
         return jsonify({
             'success': False,
             'error': str(e)

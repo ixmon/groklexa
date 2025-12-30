@@ -2293,11 +2293,28 @@
         
         async function processAudioBlob(blob) {
             if (wakeWordAborted) {
-                console.log('Recording aborted by wake word, discarding audio');
+                console.log('[Groklexa] Recording aborted by wake word, discarding audio');
                 isProcessing = false;
                 return;
             }
             
+            // Check if we should use separate APIs
+            const useSeparateAPIs = currentApiConfig && 
+                                    currentApiConfig.mode === 'separate' &&
+                                    currentApiConfig.transcription?.provider === 'browser';
+            
+            if (useSeparateAPIs) {
+                console.log('[Groklexa] Using separate APIs mode with browser transcription');
+                await processWithSeparateAPIs(blob);
+                return;
+            }
+            
+            // Default: Use unified WebSocket API
+            console.log('[Groklexa] Using unified WebSocket API');
+            await processWithUnifiedAPI(blob);
+        }
+        
+        async function processWithUnifiedAPI(blob) {
             const formData = new FormData();
             const audioFile = new File([blob], 'recording.mp3', { type: 'audio/mpeg' });
             formData.append('audio', audioFile);
@@ -2308,7 +2325,7 @@
             
             // Set a 60 second timeout for the request
             const timeoutId = setTimeout(() => {
-                console.log('Request timeout after 60s, aborting...');
+                console.log('[Groklexa] Request timeout after 60s, aborting...');
                 currentAbortController.abort();
             }, 60000);
             
@@ -2322,7 +2339,7 @@
                 clearTimeout(timeoutId);
                 
                 if (wakeWordAborted) {
-                    console.log('Request completed but wake word aborted, discarding result');
+                    console.log('[Groklexa] Request completed but wake word aborted, discarding result');
                     isProcessing = false;
                     return;
                 }
@@ -2334,7 +2351,7 @@
                     showResult(data.result);
                 } else {
                     showStatus('Error: ' + data.error, 'error');
-                    console.error('Inference error:', data);
+                    console.error('[Groklexa] Inference error:', data);
                 }
             } catch (error) {
                 if (error.name === 'AbortError') {
@@ -2352,6 +2369,233 @@
                     showStatus('🎧 Listening for speech...', 'listening');
                 }
             }
+        }
+        
+        async function processWithSeparateAPIs(blob) {
+            console.log('[Groklexa] Starting separate API pipeline');
+            showStatus('🎤 Transcribing...', 'processing');
+            
+            try {
+                // Step 1: Transcription (browser or server based on config)
+                let transcription;
+                const transConfig = currentApiConfig?.transcription;
+                
+                if (transConfig?.provider === 'browser') {
+                    // Use Web Speech API for live transcription
+                    console.log('[Groklexa] Using browser speech recognition');
+                    transcription = await transcribeWithWebSpeech(blob);
+                } else {
+                    // Use server-side transcription API
+                    console.log('[Groklexa] Using server-side transcription:', transConfig?.provider);
+                    transcription = await transcribeWithServer(blob);
+                }
+                
+                if (!transcription || transcription.trim() === '') {
+                    console.log('[Groklexa] No transcription result, skipping inference');
+                    showStatus('No speech detected', 'info');
+                    isProcessing = false;
+                    return;
+                }
+                
+                console.log('[Groklexa] Transcription:', transcription);
+                
+                // Step 2: Text inference via server
+                showStatus('🤔 Thinking...', 'processing');
+                
+                currentAbortController = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    console.log('[Groklexa] Inference timeout after 60s');
+                    currentAbortController.abort();
+                }, 60000);
+                
+                const response = await fetch('/api/infer/text', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: transcription,
+                        conversation_history: conversationHistory
+                    }),
+                    signal: currentAbortController.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (wakeWordAborted) {
+                    console.log('[Groklexa] Aborted during inference');
+                    isProcessing = false;
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                if (!data.success) {
+                    throw new Error(data.error || 'Inference failed');
+                }
+                
+                const aiResponse = data.response;
+                console.log('[Groklexa] AI Response:', aiResponse.substring(0, 100) + '...');
+                
+                // Show results
+                showResult({
+                    transcription: transcription,
+                    ai_response_text: aiResponse
+                });
+                
+                // Step 3: Synthesis (browser or server based on config)
+                const synthConfig = currentApiConfig?.synthesis;
+                if (synthConfig?.provider === 'browser') {
+                    console.log('[Groklexa] Using browser speech synthesis');
+                    showStatus('🔊 Speaking...', 'speaking');
+                    await synthesizeWithWebSpeech(aiResponse);
+                } else {
+                    // For now, fall back to browser synthesis
+                    console.log('[Groklexa] Server synthesis not fully implemented, using browser');
+                    showStatus('🔊 Speaking...', 'speaking');
+                    await synthesizeWithWebSpeech(aiResponse);
+                }
+                
+                showStatus('Success!', 'success');
+                
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    console.log('[Groklexa] Request aborted');
+                    showStatus('Stopped', 'info');
+                } else {
+                    console.error('[Groklexa] Pipeline error:', error);
+                    showStatus('Error: ' + error.message, 'error');
+                }
+            } finally {
+                currentAbortController = null;
+                isProcessing = false;
+                if (wakeWordState === 'active') {
+                    showStatus('🎧 Listening for speech...', 'listening');
+                }
+            }
+        }
+        
+        // Server-side transcription API
+        async function transcribeWithServer(audioBlob) {
+            const formData = new FormData();
+            const audioFile = new File([audioBlob], 'recording.webm', { type: 'audio/webm' });
+            formData.append('audio', audioFile);
+            
+            const response = await fetch('/api/transcribe', {
+                method: 'POST',
+                body: formData,
+                signal: currentAbortController?.signal
+            });
+            
+            const data = await response.json();
+            
+            if (!data.success) {
+                if (data.use_browser) {
+                    // Fallback to browser
+                    console.log('[Groklexa] Server requested browser transcription');
+                    return await transcribeWithWebSpeech(audioBlob);
+                }
+                throw new Error(data.error || 'Transcription failed');
+            }
+            
+            return data.transcription || '';
+        }
+        
+        // Browser-based transcription using Web Speech API
+        function transcribeWithWebSpeech(audioBlob) {
+            return new Promise((resolve, reject) => {
+                if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+                    reject(new Error('Web Speech API not supported in this browser'));
+                    return;
+                }
+                
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                const recognition = new SpeechRecognition();
+                
+                recognition.continuous = false;
+                recognition.interimResults = false;
+                recognition.lang = 'en-US';
+                
+                let finalTranscript = '';
+                
+                recognition.onresult = (event) => {
+                    for (let i = event.resultIndex; i < event.results.length; i++) {
+                        if (event.results[i].isFinal) {
+                            finalTranscript += event.results[i][0].transcript;
+                        }
+                    }
+                };
+                
+                recognition.onerror = (event) => {
+                    console.error('[Groklexa] Speech recognition error:', event.error);
+                    if (event.error === 'no-speech') {
+                        resolve(''); // No speech detected, not an error
+                    } else {
+                        reject(new Error('Speech recognition error: ' + event.error));
+                    }
+                };
+                
+                recognition.onend = () => {
+                    console.log('[Groklexa] Speech recognition ended, transcript:', finalTranscript);
+                    resolve(finalTranscript);
+                };
+                
+                // Note: Web Speech API listens to microphone directly, not audio blobs
+                // For blob-based transcription, we'd need a server-side solution
+                // This implementation starts listening for live speech
+                console.log('[Groklexa] Starting Web Speech recognition (live microphone)');
+                recognition.start();
+                
+                // Auto-stop after a reasonable timeout
+                setTimeout(() => {
+                    recognition.stop();
+                }, 10000);
+            });
+        }
+        
+        // Browser-based speech synthesis
+        function synthesizeWithWebSpeech(text) {
+            return new Promise((resolve, reject) => {
+                if (!('speechSynthesis' in window)) {
+                    reject(new Error('Speech synthesis not supported'));
+                    return;
+                }
+                
+                // Cancel any ongoing speech
+                window.speechSynthesis.cancel();
+                
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = 'en-US';
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+                
+                // Try to find a good voice
+                const voices = window.speechSynthesis.getVoices();
+                const preferredVoice = voices.find(v => v.name.includes('Samantha') || v.name.includes('Google')) 
+                                    || voices.find(v => v.lang.startsWith('en'));
+                if (preferredVoice) {
+                    utterance.voice = preferredVoice;
+                }
+                
+                utterance.onend = () => {
+                    console.log('[Groklexa] Speech synthesis complete');
+                    resolve();
+                };
+                
+                utterance.onerror = (event) => {
+                    console.error('[Groklexa] Speech synthesis error:', event.error);
+                    reject(new Error('Speech synthesis error: ' + event.error));
+                };
+                
+                // Pause Silero VAD while speaking
+                isAISpeaking = true;
+                
+                window.speechSynthesis.speak(utterance);
+                
+                utterance.onend = () => {
+                    isAISpeaking = false;
+                    console.log('[Groklexa] Speech synthesis complete');
+                    resolve();
+                };
+            });
         }
 
         // ========== EVENT HANDLERS ==========
@@ -2372,6 +2616,9 @@
         });
         
         // ========== API CONFIGURATION ==========
+        
+        // Global config cache for routing decisions
+        let currentApiConfig = null;
         
         const apiModeSingle = document.getElementById('apiModeSingle');
         const apiModeSeparate = document.getElementById('apiModeSeparate');
@@ -2550,10 +2797,12 @@
                         }
                     });
                     
-                    console.log('API config loaded');
+                    // Store config globally for routing decisions
+                    currentApiConfig = config;
+                    console.log('[Groklexa] API config loaded:', config.mode, 'mode');
                 }
             } catch (e) {
-                console.error('Failed to load API config:', e);
+                console.error('[Groklexa] Failed to load API config:', e);
             }
         }
         
