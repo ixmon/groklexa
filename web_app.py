@@ -8,6 +8,7 @@ import tempfile
 import asyncio
 import json
 import logging
+import time
 import requests
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory
@@ -396,9 +397,17 @@ def whisper_load():
 
 @app.route('/api/models/<provider>')
 def get_provider_models(provider):
-    """Get available models for a specific inference provider."""
+    """Get available models for a specific inference provider.
+    
+    Models are cached and only refreshed if:
+    - Cache is older than 7 days
+    - Force refresh is requested (?refresh=true)
+    - No cached models exist for this provider
+    """
     try:
-        # Load config to get auth
+        force_refresh = request.args.get('refresh', 'false').lower() == 'true'
+        
+        # Load config to get auth and cached models
         config = load_config()
         mode = config.get('mode', 'single')
         
@@ -409,13 +418,34 @@ def get_provider_models(provider):
         
         auth = api_config.get('auth', '')
         
+        # Check cache
+        cached_models = config.get('_cached_models', {})
+        provider_cache = cached_models.get(provider, {})
+        cached_at = provider_cache.get('cached_at', 0)
+        cached_list = provider_cache.get('models', [])
+        
+        # Cache duration: 7 days in seconds
+        CACHE_DURATION = 7 * 24 * 60 * 60
+        cache_age = time.time() - cached_at
+        cache_valid = cache_age < CACHE_DURATION and len(cached_list) > 0
+        
+        if cache_valid and not force_refresh:
+            logger.info(f"Using cached models for {provider} (age: {cache_age/3600:.1f} hours)")
+            return jsonify({'success': True, 'models': cached_list, 'cached': True})
+        
+        # Fetch fresh models
+        models = []
+        fetch_success = False
+        
         if provider == 'grok':
             models = fetch_openai_compatible_models('https://api.x.ai/v1/models', auth)
+            fetch_success = len(models) > 0
         elif provider == 'openai':
             models = fetch_openai_compatible_models('https://api.openai.com/v1/models', auth)
+            fetch_success = len(models) > 0
         elif provider == 'ollama':
-            # Ollama uses a different endpoint
             models = fetch_ollama_models('http://localhost:11434/api/tags')
+            fetch_success = len(models) > 0
         elif provider == 'anthropic':
             # Anthropic doesn't have a models endpoint, return hardcoded
             models = [
@@ -424,13 +454,32 @@ def get_provider_models(provider):
                 {'id': 'claude-3-opus-20240229', 'name': 'Claude 3 Opus'},
                 {'id': 'claude-3-haiku-20240307', 'name': 'Claude 3 Haiku'}
             ]
-        else:
-            models = []
+            fetch_success = True
         
-        return jsonify({'success': True, 'models': models})
+        # Update cache only on successful fetch
+        if fetch_success and len(models) > 0:
+            if '_cached_models' not in config:
+                config['_cached_models'] = {}
+            config['_cached_models'][provider] = {
+                'models': models,
+                'cached_at': time.time()
+            }
+            save_config(config)
+            logger.info(f"Cached {len(models)} models for {provider}")
+        elif len(cached_list) > 0:
+            # Fetch failed but we have cached data - use it
+            logger.warning(f"Model fetch failed for {provider}, using stale cache")
+            models = cached_list
+        
+        return jsonify({'success': True, 'models': models, 'cached': False})
         
     except Exception as e:
         logger.error(f"Error fetching models for {provider}: {e}")
+        # Try to return cached models on error
+        config = load_config()
+        cached = config.get('_cached_models', {}).get(provider, {}).get('models', [])
+        if cached:
+            return jsonify({'success': True, 'models': cached, 'cached': True, 'error': str(e)})
         return jsonify({'success': False, 'error': str(e), 'models': []}), 500
 
 
