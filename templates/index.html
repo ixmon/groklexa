@@ -1419,6 +1419,11 @@
         let sileroWasSpeaking = false;  // Track speech state changes
         let sileroSpeechStartTime = null;
         const SILERO_MIN_SPEECH_DURATION = 500;  // Minimum speech duration in ms
+        
+        // Audio pre-buffer to capture speech before VAD triggers (fixes missing first word)
+        let audioPreBuffer = [];
+        const AUDIO_PRE_BUFFER_DURATION = 500;  // Keep last 500ms of audio
+        let audioPreBufferMaxChunks = 5;  // ~500ms at 100ms chunks
 
         // Video element
         const groklexaVideo = document.getElementById('groklexaVideo');
@@ -1815,7 +1820,12 @@
                 });
                 const score = results[wakeWordModels.wakeword.outputNames[0]].data[0];
                 
-                if (score > 0.5 && isSpeechActive && !ww_isDetectionCoolingDown) {
+                // Only detect wake word if:
+                // 1. Score threshold met
+                // 2. Speech is active (from Silero VAD)
+                // 3. Not in cooldown period
+                // 4. AI is NOT speaking (prevent false trigger from AI's voice)
+                if (score > 0.5 && isSpeechActive && !ww_isDetectionCoolingDown && !isAISpeaking) {
                     console.log('🎉 Wake word detected! Score:', score.toFixed(3));
                     onWakeWordDetected();
                     ww_isDetectionCoolingDown = true;
@@ -1848,6 +1858,14 @@
             // Initialize Silero-based recording (uses neural network for speech detection)
             if (!sileroRecorder && wakeWordStream) {
                 initSileroRecorder();
+            }
+            
+            // Start pre-buffer recording to capture audio before speech is detected
+            // This fixes the "missing first word" issue
+            audioPreBuffer = [];
+            if (sileroRecorder && sileroRecorder.state === 'inactive') {
+                sileroRecorder.start(100);  // Start continuous recording for pre-buffer
+                console.log('📼 Pre-buffer recording started for conversation mode');
             }
             
             // Start browser transcription if using separate APIs with browser transcription
@@ -2064,7 +2082,17 @@
                 
                 sileroRecorder.ondataavailable = (event) => {
                     if (event.data.size > 0) {
-                        sileroAudioChunks.push(event.data);
+                        if (sileroWasSpeaking) {
+                            // During speech, add to main audio chunks
+                            sileroAudioChunks.push(event.data);
+                        } else {
+                            // Before speech detected, add to rolling pre-buffer
+                            audioPreBuffer.push(event.data);
+                            // Keep only the last N chunks (rolling buffer)
+                            while (audioPreBuffer.length > audioPreBufferMaxChunks) {
+                                audioPreBuffer.shift();
+                            }
+                        }
                     }
                 };
                 
@@ -2072,6 +2100,7 @@
                     if (wakeWordAborted) {
                         console.log('Silero recording aborted by wake word, discarding');
                         sileroAudioChunks = [];
+                        audioPreBuffer = [];
                         isProcessing = false;
                         return;
                     }
@@ -2099,6 +2128,13 @@
                         isProcessing = false;
                     }
                     
+                    // Restart pre-buffer for next utterance
+                    if (wakeWordState === 'active' && sileroRecorder && sileroRecorder.state === 'inactive') {
+                        audioPreBuffer = [];
+                        sileroRecorder.start(100);
+                        console.log('📼 Pre-buffer recording restarted');
+                    }
+                    
                     if (wakeWordState === 'active' && !isProcessing) {
                         showStatus('🎧 Listening for speech...', 'listening');
                     }
@@ -2119,18 +2155,21 @@
                 console.log('🎤 Silero VAD: Speech started');
                 sileroWasSpeaking = true;
                 sileroSpeechStartTime = Date.now();
-                sileroAudioChunks = [];
                 
-                // Initialize recorder if needed
+                // Copy pre-buffer to audio chunks (captures the first word!)
+                sileroAudioChunks = [...audioPreBuffer];
+                console.log(`📦 Pre-buffer: ${audioPreBuffer.length} chunks included`);
+                
+                // Initialize recorder if needed (it might already be recording for pre-buffer)
                 if (!sileroRecorder) {
                     initSileroRecorder();
                 }
                 
-                // Start recording
+                // Start recording if not already (shouldn't happen with continuous pre-buffer)
                 if (sileroRecorder && sileroRecorder.state === 'inactive') {
                     sileroRecorder.start(100);  // Collect chunks every 100ms
-                    showStatus('🎤 Listening...', 'speaking');
                 }
+                showStatus('🎤 Listening...', 'speaking');
             } else if (!isSpeaking && sileroWasSpeaking) {
                 // Speech ended!
                 console.log('🛑 Silero VAD: Speech ended');
@@ -2143,6 +2182,26 @@
                     sileroRecorder.stop();
                 }
             }
+        }
+        
+        // Start continuous pre-buffer recording (captures audio before speech is detected)
+        function startPreBufferRecording() {
+            if (!wakeWordStream) {
+                console.error('Cannot start pre-buffer - no wake word stream');
+                return;
+            }
+            
+            // If recorder exists and is inactive, start it for pre-buffering
+            if (sileroRecorder && sileroRecorder.state === 'inactive') {
+                audioPreBuffer = [];
+                sileroRecorder.start(100);  // Collect chunks every 100ms
+                console.log('📼 Pre-buffer recording started');
+            }
+        }
+        
+        // Stop pre-buffer recording
+        function stopPreBufferRecording() {
+            audioPreBuffer = [];
         }
 
         // ========== SIMPLE VAD (fallback) ==========
