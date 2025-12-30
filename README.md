@@ -17,7 +17,20 @@ Groklexa is a fully in-browser voice assistant that wakes up when you say its cu
 
 Perfect for desktop always-on setups, kitchen counters, workshops, or just late-night philosophical rants when typing feels like too much work. Open source, hackable, and deliberately fun.
 
-<img width="1719" height="998" alt="Groklexa interface" src="https://github.com/user-attachments/assets/dc69893e-9a3d-4c71-8490-737120c7106d" />
+### Ignore Mode
+*Waiting for you to enable listening*
+
+![Ignore mode](docs/screenshots/groklexa-ignore.png)
+
+### Listening Mode
+*Say "Groklexa" to wake - she opens her eyes and listens*
+
+![Listening mode](docs/screenshots/groklexa-listening.png)
+
+### Settings Panel
+*Configure voice, APIs, view conversation history*
+
+![Settings panel](docs/screenshots/groklexa-settings.png)
 
 ## Quick Start
 
