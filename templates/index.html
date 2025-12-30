@@ -1829,6 +1829,7 @@
             if (currentApiConfig?.mode === 'separate' && 
                 currentApiConfig?.transcription?.provider === 'browser') {
                 console.log('[Groklexa] Starting parallel browser transcription');
+                browserTranscriptBuffer = '';  // Clear any stale transcripts
                 startBrowserTranscription();
             }
             
@@ -2583,11 +2584,11 @@
             return transcript;
         }
         
-        // Legacy function for compatibility
+        // Get browser transcript and clear buffer for next utterance
         function transcribeWithWebSpeech(audioBlob) {
-            // Just return whatever we captured during recording
             const transcript = getBrowserTranscript();
             console.log('[Groklexa] Retrieved browser transcript:', transcript);
+            // Buffer is already cleared by getBrowserTranscript()
             return Promise.resolve(transcript);
         }
         
@@ -2622,6 +2623,9 @@
                 
                 utterance.onerror = (event) => {
                     isAISpeaking = false;
+                    // Resume browser transcription and clear any garbage it picked up
+                    browserTranscriptBuffer = '';
+                    startBrowserTranscription();
                     console.error('[Groklexa] Speech synthesis error:', event.error);
                     reject(new Error('Speech synthesis error: ' + event.error));
                 };
@@ -2629,12 +2633,19 @@
                 utterance.onstart = () => {
                     // Pause VAD and browser transcription while speaking
                     isAISpeaking = true;
-                    console.log('[Groklexa] Browser synthesis started - pausing VAD');
+                    stopBrowserTranscription();  // Stop transcribing our own speech
+                    console.log('[Groklexa] Browser synthesis started - pausing VAD & transcription');
                 };
                 
                 utterance.onend = () => {
                     isAISpeaking = false;
-                    console.log('[Groklexa] Speech synthesis complete - resuming VAD');
+                    // Resume browser transcription with clean buffer
+                    browserTranscriptBuffer = '';
+                    if (wakeWordState === 'active' && currentApiConfig?.mode === 'separate' && 
+                        currentApiConfig?.transcription?.provider === 'browser') {
+                        startBrowserTranscription();
+                    }
+                    console.log('[Groklexa] Speech synthesis complete - resuming VAD & transcription');
                     resolve();
                 };
                 
