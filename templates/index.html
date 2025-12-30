@@ -1137,13 +1137,25 @@
                         <label>Provider</label>
                         <select id="transcriptionProvider">
                             <option value="browser">Browser (Web Speech API)</option>
+                            <option value="local_whisper">Local Whisper (Free, Offline)</option>
                             <option value="grok">Grok API</option>
                             <option value="whisper">OpenAI Whisper</option>
                             <option value="google">Google Cloud Speech</option>
                             <option value="custom">Custom URL</option>
                         </select>
                     </div>
-                    <div class="api-field" id="transcriptionUrlField">
+                    <div class="api-field whisper-model-field" style="display:none;">
+                        <label>Model Size</label>
+                        <select id="whisperModelSize">
+                            <option value="tiny">Tiny (fastest, least accurate)</option>
+                            <option value="base" selected>Base (balanced)</option>
+                            <option value="small">Small (better accuracy)</option>
+                            <option value="medium">Medium (high accuracy)</option>
+                            <option value="large-v3">Large V3 (best, slowest)</option>
+                        </select>
+                        <button class="test-btn" id="loadWhisperBtn" onclick="loadWhisperModel()">Load Model</button>
+                    </div>
+                    <div class="api-field transcription-url-field">
                         <label>URL</label>
                         <input type="text" id="transcriptionUrl" placeholder="API endpoint URL">
                     </div>
@@ -2402,6 +2414,10 @@
                     // Use Web Speech API for live transcription
                     console.log('[Groklexa] Using browser speech recognition');
                     transcription = await transcribeWithWebSpeech(blob);
+                } else if (transConfig?.provider === 'local_whisper') {
+                    // Use local Whisper model
+                    console.log('[Groklexa] Using local Whisper transcription');
+                    transcription = await transcribeWithServer(blob);
                 } else {
                     // Use server-side transcription API
                     console.log('[Groklexa] Using server-side transcription:', transConfig?.provider);
@@ -2876,6 +2892,76 @@
             document.getElementById('transcriptionUrl'),
             'transcription'
         );
+        
+        // Transcription provider change handler
+        const transcriptionProvider = document.getElementById('transcriptionProvider');
+        const whisperModelField = document.querySelector('.whisper-model-field');
+        const transcriptionUrlField = document.querySelector('.transcription-url-field');
+        const transcriptionAuthField = document.getElementById('transcriptionAuth')?.closest('.api-field-row');
+        
+        function updateTranscriptionUI() {
+            const provider = transcriptionProvider.value;
+            
+            // Show/hide whisper model selector
+            if (provider === 'local_whisper') {
+                whisperModelField.style.display = 'block';
+                if (transcriptionUrlField) transcriptionUrlField.style.display = 'none';
+                if (transcriptionAuthField) transcriptionAuthField.style.display = 'none';
+            } else if (provider === 'browser') {
+                whisperModelField.style.display = 'none';
+                if (transcriptionUrlField) transcriptionUrlField.style.display = 'none';
+                if (transcriptionAuthField) transcriptionAuthField.style.display = 'none';
+            } else {
+                whisperModelField.style.display = 'none';
+                if (transcriptionUrlField) transcriptionUrlField.style.display = 'block';
+                if (transcriptionAuthField) transcriptionAuthField.style.display = 'flex';
+            }
+        }
+        
+        transcriptionProvider.addEventListener('change', updateTranscriptionUI);
+        updateTranscriptionUI();
+        
+        // Load Whisper model
+        async function loadWhisperModel() {
+            const size = document.getElementById('whisperModelSize').value;
+            const btn = document.getElementById('loadWhisperBtn');
+            
+            btn.textContent = 'Loading...';
+            btn.disabled = true;
+            
+            try {
+                const response = await fetch('/api/whisper/load', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ size })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    btn.textContent = '✓ Loaded';
+                    btn.className = 'test-btn success';
+                } else {
+                    btn.textContent = '✗ Failed';
+                    btn.className = 'test-btn error';
+                    console.error('[Groklexa] Whisper load error:', data.error);
+                }
+            } catch (e) {
+                btn.textContent = '✗ Error';
+                btn.className = 'test-btn error';
+                console.error('[Groklexa] Whisper load error:', e);
+            }
+            
+            setTimeout(() => {
+                btn.textContent = 'Load Model';
+                btn.className = 'test-btn';
+                btn.disabled = false;
+            }, 3000);
+        }
+        
+        // Make loadWhisperModel available globally
+        window.loadWhisperModel = loadWhisperModel;
+        
         setupProviderUrlSync(
             document.getElementById('inferenceProvider'),
             document.getElementById('inferenceUrl'),

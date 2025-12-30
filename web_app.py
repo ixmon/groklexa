@@ -285,6 +285,46 @@ PROVIDER_VOICES = {
 # Cache for edge-tts voices
 _edge_tts_voices_cache = None
 
+# Local Whisper model (lazy loaded)
+_whisper_model = None
+_whisper_model_size = 'base'  # Options: tiny, base, small, medium, large-v3
+
+
+def get_whisper_model():
+    """Get or initialize the local Whisper model."""
+    global _whisper_model
+    if _whisper_model is not None:
+        return _whisper_model
+    
+    try:
+        from faster_whisper import WhisperModel
+        logger.info(f"Loading Whisper model: {_whisper_model_size}")
+        # Use CPU by default, can be changed to 'cuda' for GPU
+        _whisper_model = WhisperModel(_whisper_model_size, device="cpu", compute_type="int8")
+        logger.info("Whisper model loaded successfully")
+        return _whisper_model
+    except Exception as e:
+        logger.error(f"Failed to load Whisper model: {e}")
+        return None
+
+
+def transcribe_with_local_whisper(audio_path: str) -> str:
+    """Transcribe audio using local Whisper model."""
+    model = get_whisper_model()
+    if model is None:
+        raise Exception("Whisper model not available")
+    
+    logger.debug(f"Transcribing with local Whisper: {audio_path}")
+    
+    try:
+        segments, info = model.transcribe(audio_path, beam_size=5)
+        transcript = " ".join([segment.text for segment in segments])
+        logger.info(f"Local Whisper transcription: {transcript[:100]}...")
+        return transcript.strip()
+    except Exception as e:
+        logger.error(f"Local Whisper transcription error: {e}")
+        raise
+
 
 async def get_edge_tts_voices():
     """Get available Edge TTS voices (cached)."""
@@ -311,6 +351,47 @@ async def get_edge_tts_voices():
     except Exception as e:
         logger.error(f"Failed to get Edge TTS voices: {e}")
         return []
+
+
+@app.route('/api/whisper/status')
+def whisper_status():
+    """Get local Whisper model status."""
+    global _whisper_model, _whisper_model_size
+    return jsonify({
+        'success': True,
+        'loaded': _whisper_model is not None,
+        'model_size': _whisper_model_size,
+        'available_sizes': ['tiny', 'base', 'small', 'medium', 'large-v3']
+    })
+
+
+@app.route('/api/whisper/load', methods=['POST'])
+def whisper_load():
+    """Load or reload Whisper model with specified size."""
+    global _whisper_model, _whisper_model_size
+    
+    data = request.json or {}
+    size = data.get('size', 'base')
+    
+    if size not in ['tiny', 'base', 'small', 'medium', 'large-v3']:
+        return jsonify({'success': False, 'error': f'Invalid model size: {size}'}), 400
+    
+    # Unload existing model
+    _whisper_model = None
+    _whisper_model_size = size
+    
+    # Try to load new model
+    model = get_whisper_model()
+    if model:
+        return jsonify({
+            'success': True,
+            'message': f'Whisper model {size} loaded successfully'
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Failed to load Whisper model'
+        }), 500
 
 
 @app.route('/api/voices/<provider>')
@@ -464,7 +545,9 @@ def transcribe():
             tmp_path = tmp_file.name
         
         try:
-            if provider in ['whisper', 'openai_whisper']:
+            if provider == 'local_whisper':
+                transcription = transcribe_with_local_whisper(tmp_path)
+            elif provider in ['whisper', 'openai_whisper']:
                 transcription = transcribe_with_whisper(url or 'https://api.openai.com/v1/audio/transcriptions', 
                                                          auth, tmp_path)
             elif provider == 'grok':
