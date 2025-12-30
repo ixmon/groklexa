@@ -230,10 +230,10 @@ def test_connection():
             
             success, message = asyncio.run(test_ws())
             
-        elif protocol in ['openai_compatible', 'anthropic_messages']:
+        elif protocol in ['openai_compatible', 'grok', 'openai', 'ollama', 'anthropic_messages', 'anthropic']:
             # Test REST endpoint with a simple request
             headers = {"Authorization": f"Bearer {auth}"}
-            if protocol == 'anthropic_messages':
+            if protocol in ['anthropic_messages', 'anthropic']:
                 headers = {
                     "x-api-key": auth,
                     "anthropic-version": "2023-06-01"
