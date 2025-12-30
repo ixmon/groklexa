@@ -3254,6 +3254,13 @@
                                 }
                             }
                             
+                            // Set model for inference - store BEFORE triggering change event
+                            // (change event triggers async model fetch, which will apply this value)
+                            if (section === 'inference' && config[section].model) {
+                                pendingInferenceModel = config[section].model;
+                                console.log(`[Groklexa] Pending inference model: ${config[section].model}`);
+                            }
+                            
                             // Trigger provider change to update visibility and voices
                             if (providerEl) {
                                 providerEl.dispatchEvent(new Event('change'));
@@ -3264,12 +3271,6 @@
                                 setTimeout(() => {
                                     voiceEl.value = config[section].voice;
                                 }, 500);
-                            }
-                            
-                            // Set model for inference - store as pending, will be set after models load
-                            if (section === 'inference' && config[section].model) {
-                                pendingInferenceModel = config[section].model;
-                                console.log(`[Groklexa] Pending inference model: ${config[section].model}`);
                             }
                         }
                     });
