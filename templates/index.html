@@ -3131,14 +3131,20 @@
             
             // Restore pending model value if set
             if (pendingInferenceModel) {
+                console.log(`[Groklexa] Attempting to restore model: ${pendingInferenceModel}`);
+                console.log(`[Groklexa] Available options:`, Array.from(inferenceModel.options).map(o => o.value));
                 inferenceModel.value = pendingInferenceModel;
-                console.log(`[Groklexa] Restored inference model: ${pendingInferenceModel}`);
+                console.log(`[Groklexa] After setting, value is: ${inferenceModel.value}`);
+                if (inferenceModel.value !== pendingInferenceModel) {
+                    console.warn(`[Groklexa] Model restore FAILED - value mismatch`);
+                }
                 pendingInferenceModel = null;
             }
         }
         
         inferenceProvider.addEventListener('change', updateInferenceModels);
-        updateInferenceModels();
+        // Don't call updateInferenceModels() here - let loadApiConfig() trigger it
+        // This ensures pendingInferenceModel is set before models are fetched
         
         setupProviderUrlSync(
             document.getElementById('synthesisProvider'),
