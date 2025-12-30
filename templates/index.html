@@ -1194,18 +1194,25 @@
                     <div class="api-field">
                         <label>Provider</label>
                         <select id="synthesisProvider">
-                            <option value="grok">Grok API</option>
                             <option value="browser">Browser (Web Speech API)</option>
+                            <option value="edge_tts">Edge TTS (Free, Local)</option>
+                            <option value="grok">Grok API</option>
+                            <option value="openai_tts">OpenAI TTS</option>
                             <option value="elevenlabs">ElevenLabs</option>
-                            <option value="openai">OpenAI TTS</option>
                             <option value="custom">Custom URL</option>
                         </select>
                     </div>
                     <div class="api-field">
+                        <label>Voice</label>
+                        <select id="synthesisVoice">
+                            <option value="">Select a voice...</option>
+                        </select>
+                    </div>
+                    <div class="api-field synthesis-url-field">
                         <label>URL</label>
                         <input type="text" id="synthesisUrl" placeholder="API endpoint URL">
                     </div>
-                    <div class="api-field-row">
+                    <div class="api-field-row synthesis-auth-field">
                         <div class="api-field">
                             <label>Auth Key</label>
                             <input type="password" id="synthesisAuth" placeholder="API key">
@@ -2458,9 +2465,13 @@
                     console.log('[Groklexa] Using browser speech synthesis');
                     showStatus('🔊 Speaking...', 'speaking');
                     await synthesizeWithWebSpeech(aiResponse);
+                } else if (synthConfig?.provider === 'edge_tts' || synthConfig?.provider === 'openai_tts') {
+                    console.log('[Groklexa] Using server-side synthesis:', synthConfig.provider);
+                    showStatus('🔊 Speaking...', 'speaking');
+                    await synthesizeWithServer(aiResponse);
                 } else {
-                    // For now, fall back to browser synthesis
-                    console.log('[Groklexa] Server synthesis not fully implemented, using browser');
+                    // Fall back to browser synthesis for unsupported providers
+                    console.log('[Groklexa] Falling back to browser synthesis');
                     showStatus('🔊 Speaking...', 'speaking');
                     await synthesizeWithWebSpeech(aiResponse);
                 }
@@ -2590,6 +2601,85 @@
             console.log('[Groklexa] Retrieved browser transcript:', transcript);
             // Buffer is already cleared by getBrowserTranscript()
             return Promise.resolve(transcript);
+        }
+        
+        // Server-side speech synthesis (Edge TTS, OpenAI TTS, etc.)
+        async function synthesizeWithServer(text) {
+            console.log('[Groklexa] Calling server synthesis API');
+            
+            const response = await fetch('/api/synthesize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            
+            const data = await response.json();
+            
+            if (!data.success) {
+                throw new Error(data.error || 'Synthesis failed');
+            }
+            
+            if (data.use_browser) {
+                // Server requested browser fallback
+                console.log('[Groklexa] Server requested browser synthesis fallback');
+                return synthesizeWithWebSpeech(text);
+            }
+            
+            if (data.audio_base64) {
+                // Play the audio
+                console.log('[Groklexa] Playing server-generated audio');
+                return playServerAudio(data.audio_base64, data.audio_format || 'mp3');
+            }
+            
+            throw new Error('No audio received from server');
+        }
+        
+        // Play audio from server (base64 encoded)
+        function playServerAudio(base64Audio, format) {
+            return new Promise((resolve, reject) => {
+                try {
+                    const binaryString = atob(base64Audio);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    
+                    const mimeType = format === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+                    const blob = new Blob([bytes], { type: mimeType });
+                    const audioUrl = URL.createObjectURL(blob);
+                    
+                    // Use the existing audio player
+                    const audio = new Audio(audioUrl);
+                    
+                    // Pause VAD while playing
+                    isAISpeaking = true;
+                    stopBrowserTranscription();
+                    console.log('[Groklexa] Server audio playing - pausing VAD & transcription');
+                    
+                    audio.onended = () => {
+                        isAISpeaking = false;
+                        browserTranscriptBuffer = '';
+                        if (wakeWordState === 'active' && currentApiConfig?.mode === 'separate' && 
+                            currentApiConfig?.transcription?.provider === 'browser') {
+                            startBrowserTranscription();
+                        }
+                        console.log('[Groklexa] Server audio complete - resuming VAD & transcription');
+                        URL.revokeObjectURL(audioUrl);
+                        resolve();
+                    };
+                    
+                    audio.onerror = (e) => {
+                        isAISpeaking = false;
+                        console.error('[Groklexa] Audio playback error:', e);
+                        reject(new Error('Audio playback failed'));
+                    };
+                    
+                    audio.play();
+                    
+                } catch (e) {
+                    reject(e);
+                }
+            });
         }
         
         // Browser-based speech synthesis
@@ -2797,6 +2887,65 @@
             'synthesis'
         );
         
+        // Voice selector for synthesis
+        const synthesisProvider = document.getElementById('synthesisProvider');
+        const synthesisVoice = document.getElementById('synthesisVoice');
+        const synthesisUrlField = document.querySelector('.synthesis-url-field');
+        const synthesisAuthField = document.querySelector('.synthesis-auth-field');
+        
+        async function updateSynthesisVoices() {
+            const provider = synthesisProvider.value;
+            synthesisVoice.innerHTML = '<option value="">Loading voices...</option>';
+            
+            // Show/hide URL and Auth fields based on provider
+            if (provider === 'browser' || provider === 'edge_tts') {
+                synthesisUrlField.style.display = 'none';
+                synthesisAuthField.style.display = 'none';
+            } else {
+                synthesisUrlField.style.display = 'block';
+                synthesisAuthField.style.display = 'flex';
+            }
+            
+            if (provider === 'browser') {
+                // Get browser voices
+                const voices = window.speechSynthesis.getVoices();
+                if (voices.length === 0) {
+                    // Voices might not be loaded yet
+                    await new Promise(resolve => {
+                        window.speechSynthesis.onvoiceschanged = resolve;
+                        setTimeout(resolve, 1000);
+                    });
+                }
+                const browserVoices = window.speechSynthesis.getVoices();
+                synthesisVoice.innerHTML = browserVoices
+                    .filter(v => v.lang.startsWith('en'))
+                    .map(v => `<option value="${v.name}">${v.name} (${v.lang})</option>`)
+                    .join('');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/voices/${provider}`);
+                const data = await response.json();
+                
+                if (data.success && data.voices.length > 0) {
+                    synthesisVoice.innerHTML = data.voices
+                        .map(v => `<option value="${v.id}">${v.name}</option>`)
+                        .join('');
+                } else {
+                    synthesisVoice.innerHTML = '<option value="">No voices available</option>';
+                }
+            } catch (e) {
+                console.error('[Groklexa] Failed to fetch voices:', e);
+                synthesisVoice.innerHTML = '<option value="">Error loading voices</option>';
+            }
+        }
+        
+        synthesisProvider.addEventListener('change', updateSynthesisVoices);
+        
+        // Initial voice load
+        updateSynthesisVoices();
+        
         // Load config from server
         async function loadApiConfig() {
             try {
@@ -2832,6 +2981,7 @@
                             const providerEl = document.getElementById(`${section}Provider`);
                             const urlEl = document.getElementById(`${section}Url`);
                             const authEl = document.getElementById(`${section}Auth`);
+                            const voiceEl = document.getElementById(`${section}Voice`);
                             
                             if (providerEl) providerEl.value = config[section].provider || '';
                             if (urlEl) urlEl.value = config[section].url || '';
@@ -2845,9 +2995,16 @@
                                 }
                             }
                             
-                            // Trigger provider change to update visibility
+                            // Trigger provider change to update visibility and voices
                             if (providerEl) {
                                 providerEl.dispatchEvent(new Event('change'));
+                            }
+                            
+                            // Set voice after voices are loaded (needs delay for async fetch)
+                            if (voiceEl && config[section].voice) {
+                                setTimeout(() => {
+                                    voiceEl.value = config[section].voice;
+                                }, 500);
                             }
                         }
                     });
@@ -2887,6 +3044,7 @@
                     provider: document.getElementById('synthesisProvider').value,
                     url: document.getElementById('synthesisUrl').value,
                     auth: document.getElementById('synthesisAuth').value,
+                    voice: document.getElementById('synthesisVoice').value,
                     protocol: document.getElementById('synthesisProvider').value
                 }
             };

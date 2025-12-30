@@ -15,6 +15,7 @@ description = "Voice assistant with wake word detection, powered by XAI Realtime
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "edge-tts>=7.2.7",
     "flask>=3.1.2",
     "pydub>=0.25.1",
     "requests>=2.32.5",

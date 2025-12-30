@@ -274,8 +274,70 @@ def test_connection():
         }), 500
 
 
-# Available voices for XAI API
-AVAILABLE_VOICES = ["Ara", "Rex", "Sal", "Eve", "Leo"]
+# Available voices by provider
+PROVIDER_VOICES = {
+    'grok': ['Ara', 'Rex', 'Sal', 'Eve', 'Leo'],
+    'xai_realtime': ['Ara', 'Rex', 'Sal', 'Eve', 'Leo'],
+    'openai_tts': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+    'browser': [],  # Fetched client-side
+}
+
+# Cache for edge-tts voices
+_edge_tts_voices_cache = None
+
+
+async def get_edge_tts_voices():
+    """Get available Edge TTS voices (cached)."""
+    global _edge_tts_voices_cache
+    if _edge_tts_voices_cache is not None:
+        return _edge_tts_voices_cache
+    
+    try:
+        import edge_tts
+        voices = await edge_tts.list_voices()
+        # Filter to English voices and format nicely
+        english_voices = [
+            {
+                'id': v['ShortName'],
+                'name': f"{v['ShortName'].replace('Neural', '')} ({v['Locale']})",
+                'gender': v.get('Gender', 'Unknown'),
+                'locale': v['Locale']
+            }
+            for v in voices
+            if v['Locale'].startswith('en-')
+        ]
+        _edge_tts_voices_cache = english_voices
+        return english_voices
+    except Exception as e:
+        logger.error(f"Failed to get Edge TTS voices: {e}")
+        return []
+
+
+@app.route('/api/voices/<provider>')
+def get_provider_voices(provider):
+    """Get available voices for a specific provider."""
+    try:
+        if provider in PROVIDER_VOICES:
+            voices = [{'id': v, 'name': v} for v in PROVIDER_VOICES[provider]]
+            return jsonify({'success': True, 'voices': voices})
+        
+        if provider == 'edge_tts':
+            # Edge TTS has many voices, fetch async
+            voices = asyncio.run(get_edge_tts_voices())
+            return jsonify({'success': True, 'voices': voices})
+        
+        if provider == 'elevenlabs':
+            # Would need API call to fetch, return placeholder
+            return jsonify({
+                'success': True, 
+                'voices': [{'id': 'fetch_from_api', 'name': 'Configure API key to see voices'}]
+            })
+        
+        return jsonify({'success': True, 'voices': []})
+        
+    except Exception as e:
+        logger.error(f"Error fetching voices for {provider}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/')
@@ -650,10 +712,9 @@ def synthesize():
             api_config = config.get('synthesis', {})
         
         provider = api_config.get('provider', 'grok')
-        protocol = api_config.get('protocol', 'xai_realtime')
         voice = api_config.get('voice', 'Ara')
         
-        if protocol == 'browser_speech_api':
+        if provider == 'browser':
             # Return text for client-side synthesis
             return jsonify({
                 'success': True,
@@ -661,13 +722,38 @@ def synthesize():
                 'text': text
             })
         
-        # For XAI realtime, we need to use WebSocket to get audio
-        # This is a simplified version - the full audio generation
-        # would require the WebSocket wrapper
-        logger.warning("Server-side synthesis for separate APIs not yet implemented")
+        if provider == 'edge_tts':
+            # Use Edge TTS
+            audio_data = asyncio.run(synthesize_with_edge_tts(text, voice))
+            if audio_data:
+                import base64
+                return jsonify({
+                    'success': True,
+                    'audio_base64': base64.b64encode(audio_data).decode('utf-8'),
+                    'audio_format': 'mp3'
+                })
+            else:
+                return jsonify({'success': False, 'error': 'Edge TTS synthesis failed'}), 500
+        
+        if provider == 'openai_tts':
+            url = api_config.get('url', 'https://api.openai.com/v1/audio/speech')
+            auth = api_config.get('auth', '')
+            audio_data = synthesize_with_openai_tts(url, auth, text, voice)
+            if audio_data:
+                import base64
+                return jsonify({
+                    'success': True,
+                    'audio_base64': base64.b64encode(audio_data).decode('utf-8'),
+                    'audio_format': 'mp3'
+                })
+            else:
+                return jsonify({'success': False, 'error': 'OpenAI TTS synthesis failed'}), 500
+        
+        # For other providers, fallback to browser
+        logger.warning(f"Server-side synthesis for {provider} not implemented, using browser")
         return jsonify({
             'success': True,
-            'use_browser': True,  # Fallback to browser
+            'use_browser': True,
             'text': text
         })
         
@@ -677,6 +763,51 @@ def synthesize():
             'success': False,
             'error': str(e)
         }), 500
+
+
+async def synthesize_with_edge_tts(text: str, voice: str) -> bytes:
+    """Synthesize speech using Edge TTS."""
+    import edge_tts
+    import io
+    
+    logger.debug(f"Edge TTS synthesis: voice={voice}, text={text[:50]}...")
+    
+    try:
+        communicate = edge_tts.Communicate(text, voice)
+        audio_data = io.BytesIO()
+        
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_data.write(chunk["data"])
+        
+        return audio_data.getvalue()
+    except Exception as e:
+        logger.error(f"Edge TTS error: {e}")
+        return None
+
+
+def synthesize_with_openai_tts(url: str, auth: str, text: str, voice: str) -> bytes:
+    """Synthesize speech using OpenAI TTS API."""
+    logger.debug(f"OpenAI TTS synthesis: voice={voice}, text={text[:50]}...")
+    
+    headers = {
+        'Authorization': f'Bearer {auth}',
+        'Content-Type': 'application/json'
+    }
+    
+    payload = {
+        'model': 'tts-1',
+        'input': text,
+        'voice': voice
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        return response.content
+    except Exception as e:
+        logger.error(f"OpenAI TTS error: {e}")
+        return None
 
 
 if __name__ == '__main__':
