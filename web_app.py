@@ -854,8 +854,8 @@ def infer_text():
         }), 500
 
 
-def call_openai_compatible(url: str, auth: str, model: str, messages: list) -> str:
-    """Call an OpenAI-compatible API (Grok, OpenAI, Ollama, etc.)."""
+def call_openai_compatible(url: str, auth: str, model: str, messages: list, enable_tools: bool = True) -> str:
+    """Call an OpenAI-compatible API (Grok, OpenAI, Ollama, etc.) with tool support."""
     logger.debug(f"Calling OpenAI-compatible API: {url}, model: {model}")
     
     headers = {
@@ -863,16 +863,244 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list) -> s
         'Content-Type': 'application/json'
     }
     
+    # Define available tools
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_current_datetime",
+                "description": "Get the current date and time. Use this when the user asks about today's date, current time, or any time-sensitive information.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "timezone": {
+                            "type": "string",
+                            "description": "Optional timezone (e.g., 'America/New_York', 'UTC'). Defaults to server local time."
+                        }
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_x",
+                "description": "Search X (formerly Twitter) for posts, news, and discussions. Use this when the user asks about recent events, trending topics, what people are saying, or needs real-time information from social media.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query for X"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_web",
+                "description": "Search the web for information. Use this when the user asks about facts, news, or information that may require looking up current data.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query for the web"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }
+    ] if enable_tools else None
+    
     payload = {
         'model': model,
-        'messages': messages
+        'messages': messages.copy()
     }
     
-    response = requests.post(url, headers=headers, json=payload, timeout=60)
-    response.raise_for_status()
+    if tools:
+        payload['tools'] = tools
+        payload['tool_choice'] = 'auto'
     
-    data = response.json()
-    return data['choices'][0]['message']['content']
+    # Tool loop - keep calling until we get a final response
+    max_tool_iterations = 5
+    for iteration in range(max_tool_iterations):
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        
+        data = response.json()
+        choice = data['choices'][0]
+        message = choice['message']
+        
+        # Check if there are tool calls
+        tool_calls = message.get('tool_calls', [])
+        
+        if not tool_calls:
+            # No tool calls, return the content
+            return message.get('content', '')
+        
+        logger.info(f"Tool calls requested (iteration {iteration + 1}): {[tc['function']['name'] for tc in tool_calls]}")
+        
+        # Add assistant message with tool calls to conversation
+        payload['messages'].append(message)
+        
+        # Execute each tool call
+        for tool_call in tool_calls:
+            function_name = tool_call['function']['name']
+            function_args = json.loads(tool_call['function']['arguments'])
+            tool_call_id = tool_call['id']
+            
+            logger.debug(f"Executing tool: {function_name} with args: {function_args}")
+            
+            # Execute the tool
+            try:
+                result = execute_tool(function_name, function_args, auth)
+                logger.info(f"Tool {function_name} result: {str(result)[:200]}...")
+            except Exception as e:
+                logger.error(f"Tool {function_name} error: {e}")
+                result = f"Error executing {function_name}: {str(e)}"
+            
+            # Add tool result to conversation
+            payload['messages'].append({
+                'role': 'tool',
+                'tool_call_id': tool_call_id,
+                'content': str(result)
+            })
+    
+    # If we hit max iterations, return whatever we have
+    logger.warning(f"Hit max tool iterations ({max_tool_iterations})")
+    return message.get('content', 'I was unable to complete the request after multiple tool calls.')
+
+
+def execute_tool(function_name: str, args: dict, auth: str) -> str:
+    """Execute a tool and return the result."""
+    if function_name == 'get_current_datetime':
+        return tool_get_current_datetime(args.get('timezone'))
+    elif function_name == 'search_x':
+        return tool_search_x(args.get('query', ''), auth)
+    elif function_name == 'search_web':
+        return tool_search_web(args.get('query', ''), auth)
+    else:
+        return f"Unknown tool: {function_name}"
+
+
+def tool_get_current_datetime(timezone: str = None) -> str:
+    """Get the current date and time."""
+    from datetime import datetime
+    import pytz
+    
+    try:
+        if timezone:
+            tz = pytz.timezone(timezone)
+            now = datetime.now(tz)
+        else:
+            now = datetime.now()
+        
+        return now.strftime("%A, %B %d, %Y at %I:%M %p %Z").strip()
+    except Exception as e:
+        # Fallback to simple format
+        from datetime import datetime
+        return datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
+
+
+def tool_search_x(query: str, auth: str) -> str:
+    """Search X (Twitter) using the xAI Agent Tools API."""
+    if not query:
+        return "No search query provided"
+    
+    logger.info(f"Searching X for: {query}")
+    
+    try:
+        # Use xAI Agent Tools API
+        headers = {
+            'Authorization': f'Bearer {auth}',
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            'query': query,
+            'source': 'x'  # Specify X/Twitter as the source
+        }
+        
+        response = requests.post(
+            'https://api.x.ai/v1/agent-tools/search',
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Format the results
+            results = data.get('results', [])
+            if results:
+                formatted = []
+                for i, result in enumerate(results[:10], 1):  # Top 10 results
+                    text = result.get('text', result.get('content', ''))
+                    author = result.get('author', result.get('user', {}).get('name', 'Unknown'))
+                    formatted.append(f"{i}. @{author}: {text[:280]}")
+                return "\n\n".join(formatted)
+            return "No results found on X for this query."
+        else:
+            logger.warning(f"X search returned {response.status_code}: {response.text[:200]}")
+            return f"X search unavailable (status {response.status_code}). Try asking the question directly."
+            
+    except Exception as e:
+        logger.error(f"X search error: {e}")
+        return f"X search error: {str(e)}"
+
+
+def tool_search_web(query: str, auth: str) -> str:
+    """Search the web using the xAI Agent Tools API."""
+    if not query:
+        return "No search query provided"
+    
+    logger.info(f"Searching web for: {query}")
+    
+    try:
+        # Use xAI Agent Tools API
+        headers = {
+            'Authorization': f'Bearer {auth}',
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            'query': query,
+            'source': 'web'
+        }
+        
+        response = requests.post(
+            'https://api.x.ai/v1/agent-tools/search',
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Format the results
+            results = data.get('results', [])
+            if results:
+                formatted = []
+                for i, result in enumerate(results[:5], 1):  # Top 5 results
+                    title = result.get('title', 'Untitled')
+                    snippet = result.get('snippet', result.get('content', ''))[:300]
+                    url = result.get('url', '')
+                    formatted.append(f"{i}. {title}\n   {snippet}\n   {url}")
+                return "\n\n".join(formatted)
+            return "No web results found for this query."
+        else:
+            logger.warning(f"Web search returned {response.status_code}: {response.text[:200]}")
+            return f"Web search unavailable (status {response.status_code}). Try asking the question directly."
+            
+    except Exception as e:
+        logger.error(f"Web search error: {e}")
+        return f"Web search error: {str(e)}"
 
 
 def call_anthropic(url: str, auth: str, model: str, messages: list) -> str:

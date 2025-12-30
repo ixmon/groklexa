@@ -19,6 +19,7 @@ dependencies = [
     "faster-whisper>=1.2.1",
     "flask>=3.1.2",
     "pydub>=0.25.1",
+    "pytz>=2024.1",
     "requests>=2.32.5",
     "websockets>=15.0.1",
 ]
