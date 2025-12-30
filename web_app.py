@@ -394,6 +394,100 @@ def whisper_load():
         }), 500
 
 
+@app.route('/api/models/<provider>')
+def get_provider_models(provider):
+    """Get available models for a specific inference provider."""
+    try:
+        # Load config to get auth
+        config = load_config()
+        mode = config.get('mode', 'single')
+        
+        if mode == 'single':
+            api_config = config.get('single', {})
+        else:
+            api_config = config.get('inference', {})
+        
+        auth = api_config.get('auth', '')
+        
+        if provider == 'grok':
+            models = fetch_openai_compatible_models('https://api.x.ai/v1/models', auth)
+        elif provider == 'openai':
+            models = fetch_openai_compatible_models('https://api.openai.com/v1/models', auth)
+        elif provider == 'ollama':
+            # Ollama uses a different endpoint
+            models = fetch_ollama_models('http://localhost:11434/api/tags')
+        elif provider == 'anthropic':
+            # Anthropic doesn't have a models endpoint, return hardcoded
+            models = [
+                {'id': 'claude-sonnet-4-20250514', 'name': 'Claude Sonnet 4'},
+                {'id': 'claude-3-5-sonnet-20241022', 'name': 'Claude 3.5 Sonnet'},
+                {'id': 'claude-3-opus-20240229', 'name': 'Claude 3 Opus'},
+                {'id': 'claude-3-haiku-20240307', 'name': 'Claude 3 Haiku'}
+            ]
+        else:
+            models = []
+        
+        return jsonify({'success': True, 'models': models})
+        
+    except Exception as e:
+        logger.error(f"Error fetching models for {provider}: {e}")
+        return jsonify({'success': False, 'error': str(e), 'models': []}), 500
+
+
+def fetch_openai_compatible_models(url: str, auth: str) -> list:
+    """Fetch models from an OpenAI-compatible API."""
+    try:
+        headers = {'Authorization': f'Bearer {auth}'}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        models = []
+        
+        for model in data.get('data', []):
+            model_id = model.get('id', '')
+            # Filter to relevant models (skip embeddings, etc.)
+            if any(skip in model_id.lower() for skip in ['embed', 'whisper', 'tts', 'dall-e', 'moderation']):
+                continue
+            models.append({
+                'id': model_id,
+                'name': model_id.replace('-', ' ').title()
+            })
+        
+        # Sort by name
+        models.sort(key=lambda x: x['name'])
+        logger.info(f"Fetched {len(models)} models from {url}")
+        return models
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch models from {url}: {e}")
+        return []
+
+
+def fetch_ollama_models(url: str) -> list:
+    """Fetch models from local Ollama instance."""
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        
+        data = response.json()
+        models = []
+        
+        for model in data.get('models', []):
+            name = model.get('name', '')
+            models.append({
+                'id': name,
+                'name': name
+            })
+        
+        logger.info(f"Fetched {len(models)} models from Ollama")
+        return models
+        
+    except Exception as e:
+        logger.warning(f"Failed to fetch Ollama models (is Ollama running?): {e}")
+        return []
+
+
 @app.route('/api/voices/<provider>')
 def get_provider_voices(provider):
     """Get available voices for a specific provider."""
