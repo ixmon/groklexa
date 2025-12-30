@@ -1420,10 +1420,8 @@
         let sileroSpeechStartTime = null;
         const SILERO_MIN_SPEECH_DURATION = 500;  // Minimum speech duration in ms
         
-        // Audio pre-buffer to capture speech before VAD triggers (fixes missing first word)
-        let audioPreBuffer = [];
-        const AUDIO_PRE_BUFFER_DURATION = 500;  // Keep last 500ms of audio
-        let audioPreBufferMaxChunks = 5;  // ~500ms at 100ms chunks
+        // Note: Pre-buffer removed - continuous recording now captures everything
+        // WebM format requires sequential chunks, so we keep all chunks from session start
 
         // Video element
         const groklexaVideo = document.getElementById('groklexaVideo');
@@ -1860,12 +1858,11 @@
                 initSileroRecorder();
             }
             
-            // Start pre-buffer recording to capture audio before speech is detected
-            // This fixes the "missing first word" issue
-            audioPreBuffer = [];
+            // Start continuous recording to capture all audio (WebM needs complete container)
+            sileroAudioChunks = [];
             if (sileroRecorder && sileroRecorder.state === 'inactive') {
-                sileroRecorder.start(100);  // Start continuous recording for pre-buffer
-                console.log('📼 Pre-buffer recording started for conversation mode');
+                sileroRecorder.start(100);  // Collect chunks every 100ms
+                console.log('📼 Continuous recording started for conversation mode');
             }
             
             // Start browser transcription if using separate APIs with browser transcription
@@ -2082,17 +2079,9 @@
                 
                 sileroRecorder.ondataavailable = (event) => {
                     if (event.data.size > 0) {
-                        if (sileroWasSpeaking) {
-                            // During speech, add to main audio chunks
-                            sileroAudioChunks.push(event.data);
-                        } else {
-                            // Before speech detected, add to rolling pre-buffer
-                            audioPreBuffer.push(event.data);
-                            // Keep only the last N chunks (rolling buffer)
-                            while (audioPreBuffer.length > audioPreBufferMaxChunks) {
-                                audioPreBuffer.shift();
-                            }
-                        }
+                        // Always add to audio chunks - we'll use all of them
+                        // This ensures the WebM container is always valid
+                        sileroAudioChunks.push(event.data);
                     }
                 };
                 
@@ -2100,13 +2089,12 @@
                     if (wakeWordAborted) {
                         console.log('Silero recording aborted by wake word, discarding');
                         sileroAudioChunks = [];
-                        audioPreBuffer = [];
                         isProcessing = false;
                         // Create fresh recorder for next session
                         sileroRecorder = null;
                         if (wakeWordState === 'active') {
                             initSileroRecorder();
-                            startPreBufferRecording();
+                            startContinuousRecording();
                         }
                         return;
                     }
@@ -2114,6 +2102,7 @@
                     const speechDuration = Date.now() - (sileroSpeechStartTime || Date.now());
                     
                     if (sileroAudioChunks.length > 0 && speechDuration >= SILERO_MIN_SPEECH_DURATION) {
+                        console.log(`Silero VAD: Creating blob from ${sileroAudioChunks.length} chunks`);
                         const audioBlob = new Blob(sileroAudioChunks, { type: 'audio/webm' });
                         sileroAudioChunks = [];
                         
@@ -2125,11 +2114,11 @@
                             
                             await processAudioBlob(audioBlob);
                         } else {
-                            console.log('Silero VAD: Audio too short, ignoring');
+                            console.log(`Silero VAD: Audio too small (${audioBlob.size} bytes), ignoring`);
                             isProcessing = false;
                         }
                     } else {
-                        console.log(`Silero VAD: Speech too short (${speechDuration}ms) or no chunks, ignoring`);
+                        console.log(`Silero VAD: Speech too short (${speechDuration}ms) or no chunks (${sileroAudioChunks.length}), ignoring`);
                         sileroAudioChunks = [];
                         isProcessing = false;
                     }
@@ -2137,9 +2126,9 @@
                     // Create FRESH MediaRecorder for next utterance (avoids WebM container issues)
                     sileroRecorder = null;
                     if (wakeWordState === 'active') {
-                        audioPreBuffer = [];
+                        sileroAudioChunks = [];
                         initSileroRecorder();
-                        startPreBufferRecording();
+                        startContinuousRecording();
                         console.log('📼 Fresh recorder created for next utterance');
                     }
                     
@@ -2164,17 +2153,14 @@
                 sileroWasSpeaking = true;
                 sileroSpeechStartTime = Date.now();
                 
-                // Copy pre-buffer to audio chunks (captures the first word!)
-                // Only use pre-buffer if recorder was already running (same session)
+                // Recorder should already be running and collecting chunks
+                // We just mark the speech start time - chunks are already being collected
                 if (sileroRecorder && sileroRecorder.state === 'recording') {
-                    sileroAudioChunks = [...audioPreBuffer];
-                    console.log(`📦 Pre-buffer: ${audioPreBuffer.length} chunks included`);
+                    console.log(`📦 Recording in progress, ${sileroAudioChunks.length} chunks so far`);
                 } else {
-                    // Recorder not running - start fresh (no pre-buffer)
+                    // Recorder not running - start fresh
+                    console.log('⚠️ Recorder was not running, starting now');
                     sileroAudioChunks = [];
-                    console.log('⚠️ Recorder was not running, no pre-buffer available');
-                    
-                    // Initialize and start recorder
                     if (!sileroRecorder) {
                         initSileroRecorder();
                     }
@@ -2190,7 +2176,7 @@
                 sileroWasSpeaking = false;
                 isProcessing = true;
                 
-                // Stop recording
+                // Stop recording - all chunks since start will be used
                 if (sileroRecorder && sileroRecorder.state === 'recording') {
                     showStatus('Processing your speech...', 'processing');
                     sileroRecorder.stop();
@@ -2198,10 +2184,10 @@
             }
         }
         
-        // Start continuous pre-buffer recording (captures audio before speech is detected)
-        function startPreBufferRecording() {
+        // Start continuous recording (captures all audio for valid WebM container)
+        function startContinuousRecording() {
             if (!wakeWordStream) {
-                console.error('Cannot start pre-buffer - no wake word stream');
+                console.error('Cannot start recording - no wake word stream');
                 return;
             }
             
@@ -2210,17 +2196,17 @@
                 initSileroRecorder();
             }
             
-            // If recorder exists and is inactive, start it for pre-buffering
+            // If recorder exists and is inactive, start it
             if (sileroRecorder && sileroRecorder.state === 'inactive') {
-                audioPreBuffer = [];
+                sileroAudioChunks = [];
                 sileroRecorder.start(100);  // Collect chunks every 100ms
-                console.log('📼 Pre-buffer recording started');
+                console.log('📼 Continuous recording started');
             }
         }
         
-        // Stop pre-buffer recording
-        function stopPreBufferRecording() {
-            audioPreBuffer = [];
+        // Stop continuous recording
+        function stopContinuousRecording() {
+            sileroAudioChunks = [];
         }
 
         // ========== SIMPLE VAD (fallback) ==========
