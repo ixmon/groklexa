@@ -2612,11 +2612,34 @@
         }
         
         // Get browser transcript and clear buffer for next utterance
-        function transcribeWithWebSpeech(audioBlob) {
+        // Waits a moment for any pending transcription to complete
+        async function transcribeWithWebSpeech(audioBlob) {
+            // Wait for pending transcription to arrive (browser API is async)
+            let attempts = 0;
+            const maxAttempts = 10;
+            const delayMs = 200;
+            
+            while (attempts < maxAttempts) {
+                const transcript = browserTranscriptBuffer.trim();
+                if (transcript.length > 0) {
+                    console.log('[Groklexa] Retrieved browser transcript:', transcript);
+                    browserTranscriptBuffer = '';
+                    return transcript;
+                }
+                
+                // Wait and try again
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                attempts++;
+                
+                if (attempts < maxAttempts) {
+                    console.log(`[Groklexa] Waiting for browser transcription... (${attempts}/${maxAttempts})`);
+                }
+            }
+            
+            // Final attempt
             const transcript = getBrowserTranscript();
-            console.log('[Groklexa] Retrieved browser transcript:', transcript);
-            // Buffer is already cleared by getBrowserTranscript()
-            return Promise.resolve(transcript);
+            console.log('[Groklexa] Retrieved browser transcript (final):', transcript);
+            return transcript;
         }
         
         // Server-side speech synthesis (Edge TTS, OpenAI TTS, etc.)
