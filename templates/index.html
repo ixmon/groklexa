@@ -1139,6 +1139,16 @@
                         </div>
                         <button class="test-btn" onclick="testConnection('single')">Test</button>
                     </div>
+                    <div class="api-field">
+                        <label>Voice</label>
+                        <select id="singleVoice">
+                            <option value="Ara">Ara (default)</option>
+                            <option value="Rex">Rex</option>
+                            <option value="Sal">Sal</option>
+                            <option value="Eve">Eve</option>
+                            <option value="Leo">Leo</option>
+                        </select>
+                    </div>
                 </div>
             </div>
             
@@ -3104,6 +3114,8 @@
         
         // Pending model value to set after models are fetched
         let pendingInferenceModel = null;
+        let pendingSynthesisVoice = null;
+        let pendingSingleVoice = null;
         
         // Fallback models if API fetch fails
         const FALLBACK_MODELS = {
@@ -3239,6 +3251,15 @@
                     synthesisVoice.innerHTML = data.voices
                         .map(v => `<option value="${v.id}">${v.name}</option>`)
                         .join('');
+                    console.log(`[Groklexa] Loaded ${data.voices.length} voices for ${provider}`);
+                    
+                    // Restore pending voice if it exists
+                    if (pendingSynthesisVoice) {
+                        console.log(`[Groklexa] Attempting to restore voice: ${pendingSynthesisVoice}`);
+                        synthesisVoice.value = pendingSynthesisVoice;
+                        console.log(`[Groklexa] After setting, voice is: ${synthesisVoice.value}`);
+                        pendingSynthesisVoice = null;
+                    }
                 } else {
                     synthesisVoice.innerHTML = '<option value="">No voices available</option>';
                 }
@@ -3275,6 +3296,9 @@
                         document.getElementById('singleProvider').value = config.single.provider || 'xai_realtime';
                         document.getElementById('singleUrl').value = config.single.url || '';
                         document.getElementById('singleAuth').value = config.single.auth || '';
+                        if (config.single.voice) {
+                            document.getElementById('singleVoice').value = config.single.voice;
+                        }
                         if (config.single.detected_model) {
                             const el = document.getElementById('singleDetectedModel');
                             el.textContent = config.single.detected_model;
@@ -3309,16 +3333,15 @@
                                 console.log(`[Groklexa] Pending inference model: ${config[section].model}`);
                             }
                             
+                            // Set voice for synthesis - store BEFORE triggering change event
+                            if (section === 'synthesis' && config[section].voice) {
+                                pendingSynthesisVoice = config[section].voice;
+                                console.log(`[Groklexa] Pending synthesis voice: ${config[section].voice}`);
+                            }
+                            
                             // Trigger provider change to update visibility and voices
                             if (providerEl) {
                                 providerEl.dispatchEvent(new Event('change'));
-                            }
-                            
-                            // Set voice after voices are loaded (needs delay for async fetch)
-                            if (voiceEl && config[section].voice) {
-                                setTimeout(() => {
-                                    voiceEl.value = config[section].voice;
-                                }, 500);
                             }
                         }
                     });
@@ -3340,6 +3363,7 @@
                     provider: document.getElementById('singleProvider').value,
                     url: document.getElementById('singleUrl').value,
                     auth: document.getElementById('singleAuth').value,
+                    voice: document.getElementById('singleVoice').value,
                     protocol: document.getElementById('singleProvider').value
                 },
                 transcription: {
