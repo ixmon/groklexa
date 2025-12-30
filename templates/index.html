@@ -3060,6 +3060,9 @@
         const inferenceUrlField = document.querySelector('.inference-url-field');
         const inferenceAuthField = document.querySelector('.inference-auth-field');
         
+        // Pending model value to set after models are fetched
+        let pendingInferenceModel = null;
+        
         // Fallback models if API fetch fails
         const FALLBACK_MODELS = {
             grok: [
@@ -3124,6 +3127,13 @@
                 inferenceModel.innerHTML = fallback
                     .map(m => `<option value="${m.id}">${m.name}</option>`)
                     .join('');
+            }
+            
+            // Restore pending model value if set
+            if (pendingInferenceModel) {
+                inferenceModel.value = pendingInferenceModel;
+                console.log(`[Groklexa] Restored inference model: ${pendingInferenceModel}`);
+                pendingInferenceModel = null;
             }
         }
         
@@ -3256,12 +3266,10 @@
                                 }, 500);
                             }
                             
-                            // Set model for inference
-                            const modelEl = document.getElementById(`${section}Model`);
-                            if (modelEl && config[section].model) {
-                                setTimeout(() => {
-                                    modelEl.value = config[section].model;
-                                }, 100);
+                            // Set model for inference - store as pending, will be set after models load
+                            if (section === 'inference' && config[section].model) {
+                                pendingInferenceModel = config[section].model;
+                                console.log(`[Groklexa] Pending inference model: ${config[section].model}`);
                             }
                         }
                     });
