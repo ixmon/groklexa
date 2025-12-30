@@ -63,13 +63,13 @@ def load_config():
         with open(CONFIG_EXAMPLE, 'r') as f:
             return json.load(f)
     else:
-        # Default config
+        # Default config - no env fallback, user must configure via UI
         return {
             "mode": "single",
             "single": {
                 "provider": "xai_realtime",
                 "url": "wss://api.x.ai/v1/realtime",
-                "auth": os.getenv('XAI_API_KEY', ''),
+                "auth": "",  # User must configure via settings
                 "protocol": "xai_realtime"
             },
             "transcription": {
@@ -81,14 +81,14 @@ def load_config():
             "inference": {
                 "provider": "grok",
                 "url": "https://api.x.ai/v1/chat/completions",
-                "auth": os.getenv('XAI_API_KEY', ''),
+                "auth": "",  # User must configure via settings
                 "protocol": "openai_compatible",
                 "model": "grok-3"
             },
             "synthesis": {
                 "provider": "grok",
                 "url": "wss://api.x.ai/v1/realtime",
-                "auth": os.getenv('XAI_API_KEY', ''),
+                "auth": "",  # User must configure via settings
                 "protocol": "xai_realtime",
                 "voice": "Ara"
             }
@@ -676,9 +676,8 @@ def synthesize():
 
 
 if __name__ == '__main__':
-    # Check for API key
-    if not os.getenv('XAI_API_KEY'):
-        print("Warning: XAI_API_KEY not set. The app will not work without it.")
+    # API keys are now configured via settings panel, no env var needed
+    logger.info("Starting Groklexa server...")
     
     # SSL certificate paths
     cert_dir = Path(__file__).parent / 'certs'
@@ -692,14 +691,14 @@ if __name__ == '__main__':
     if use_https:
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ssl_context.load_cert_chain(cert_file, key_file)
-        print("Starting HTTPS web server...")
-        print("Open https://spark.home.arpa:5001 in your browser")
-        print("Note: Your browser will show a security warning for the self-signed certificate.")
-        print("      Click 'Advanced' and 'Proceed' to accept it.")
+        logger.info("Starting HTTPS web server...")
+        logger.info("Open https://spark.home.arpa:5001 in your browser")
+        logger.info("Note: Your browser will show a security warning for the self-signed certificate.")
+        logger.info("      Click 'Advanced' and 'Proceed' to accept it.")
     else:
-        print("Starting HTTP web server (no SSL certificate found)...")
-        print("Run './generate_cert.sh' to generate a certificate for HTTPS support.")
-        print("Open http://localhost:5001 in your browser")
+        logger.info("Starting HTTP web server (no SSL certificate found)...")
+        logger.info("Run './tools/generate_cert.sh' to generate a certificate for HTTPS support.")
+        logger.info("Open http://localhost:5001 in your browser")
     
     app.run(
         debug=True,
