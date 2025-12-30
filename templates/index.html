@@ -2329,12 +2329,10 @@
             }
             
             // Check if we should use separate APIs
-            const useSeparateAPIs = currentApiConfig && 
-                                    currentApiConfig.mode === 'separate' &&
-                                    currentApiConfig.transcription?.provider === 'browser';
+            const useSeparateAPIs = currentApiConfig && currentApiConfig.mode === 'separate';
             
             if (useSeparateAPIs) {
-                console.log('[Groklexa] Using separate APIs mode with browser transcription');
+                console.log('[Groklexa] Using separate APIs mode');
                 await processWithSeparateAPIs(blob);
                 return;
             }
