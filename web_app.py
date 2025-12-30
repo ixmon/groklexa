@@ -864,8 +864,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, enab
     }
     
     # Define available tools
-    # Note: search_x and search_web are disabled - xAI doesn't have a public Agent Tools API
-    # TODO: Integrate with Brave Search, SerpAPI, or Tavily for real search functionality
+    # Search tools use xAI SDK which has built-in x_search and web_search
     tools = [
         {
             "type": "function",
@@ -883,12 +882,41 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, enab
                     "required": []
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_x",
+                "description": "Search X (formerly Twitter) for posts, news, and discussions. Use this when the user asks about recent events, trending topics, what people are saying, or needs real-time information from social media.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query for X"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_web",
+                "description": "Search the web for information. Use this when the user asks about facts, news, or information that may require looking up current data.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query for the web"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
         }
-        # Search tools disabled - xAI Agent Tools API returns 404
-        # To enable search, integrate with:
-        # - Brave Search API (https://brave.com/search/api/)
-        # - SerpAPI (https://serpapi.com/)
-        # - Tavily (https://tavily.com/)
     ] if enable_tools else None
     
     payload = {
@@ -982,97 +1010,82 @@ def tool_get_current_datetime(timezone: str = None) -> str:
 
 
 def tool_search_x(query: str, auth: str) -> str:
-    """Search X (Twitter) using the xAI Agent Tools API."""
+    """Search X (Twitter) using the xAI SDK."""
     if not query:
         return "No search query provided"
     
     logger.info(f"Searching X for: {query}")
     
     try:
-        # Use xAI Agent Tools API
-        headers = {
-            'Authorization': f'Bearer {auth}',
-            'Content-Type': 'application/json'
-        }
+        from xai_sdk import Client
+        from xai_sdk.chat import user
+        from xai_sdk.tools import x_search
         
-        payload = {
-            'query': query,
-            'source': 'x'  # Specify X/Twitter as the source
-        }
+        client = Client(api_key=auth)
         
-        response = requests.post(
-            'https://api.x.ai/v1/agent-tools/search',
-            headers=headers,
-            json=payload,
-            timeout=30
+        # Create a chat session with x_search tool
+        chat = client.chat.create(
+            model="grok-3-fast",  # Use fast model for search
+            tools=[x_search()],
         )
         
-        if response.status_code == 200:
-            data = response.json()
-            # Format the results
-            results = data.get('results', [])
-            if results:
-                formatted = []
-                for i, result in enumerate(results[:10], 1):  # Top 10 results
-                    text = result.get('text', result.get('content', ''))
-                    author = result.get('author', result.get('user', {}).get('name', 'Unknown'))
-                    formatted.append(f"{i}. @{author}: {text[:280]}")
-                return "\n\n".join(formatted)
-            return "No results found on X for this query."
+        # Ask for search results
+        chat.append(user(f"Search X for: {query}. Return a summary of the top posts and discussions."))
+        
+        # Get the response (non-streaming)
+        response = chat.sample()
+        
+        if response and response.content:
+            logger.info(f"X search result: {response.content[:200]}...")
+            return response.content
         else:
-            logger.warning(f"X search returned {response.status_code}: {response.text[:200]}")
-            return f"X search unavailable (status {response.status_code}). Try asking the question directly."
+            return "No results found on X for this query."
             
+    except ImportError as e:
+        logger.error(f"xai-sdk import error: {e}")
+        return "X search unavailable (xai-sdk not installed)"
     except Exception as e:
-        logger.error(f"X search error: {e}")
+        logger.error(f"X search error: {e}", exc_info=True)
         return f"X search error: {str(e)}"
 
 
 def tool_search_web(query: str, auth: str) -> str:
-    """Search the web using the xAI Agent Tools API."""
+    """Search the web using the xAI SDK."""
     if not query:
         return "No search query provided"
     
     logger.info(f"Searching web for: {query}")
     
     try:
-        # Use xAI Agent Tools API
-        headers = {
-            'Authorization': f'Bearer {auth}',
-            'Content-Type': 'application/json'
-        }
+        from xai_sdk import Client
+        from xai_sdk.chat import user
+        from xai_sdk.tools import web_search
         
-        payload = {
-            'query': query,
-            'source': 'web'
-        }
+        client = Client(api_key=auth)
         
-        response = requests.post(
-            'https://api.x.ai/v1/agent-tools/search',
-            headers=headers,
-            json=payload,
-            timeout=30
+        # Create a chat session with web_search tool
+        chat = client.chat.create(
+            model="grok-3-fast",  # Use fast model for search
+            tools=[web_search()],
         )
         
-        if response.status_code == 200:
-            data = response.json()
-            # Format the results
-            results = data.get('results', [])
-            if results:
-                formatted = []
-                for i, result in enumerate(results[:5], 1):  # Top 5 results
-                    title = result.get('title', 'Untitled')
-                    snippet = result.get('snippet', result.get('content', ''))[:300]
-                    url = result.get('url', '')
-                    formatted.append(f"{i}. {title}\n   {snippet}\n   {url}")
-                return "\n\n".join(formatted)
-            return "No web results found for this query."
+        # Ask for search results
+        chat.append(user(f"Search the web for: {query}. Return the key findings and information."))
+        
+        # Get the response (non-streaming)
+        response = chat.sample()
+        
+        if response and response.content:
+            logger.info(f"Web search result: {response.content[:200]}...")
+            return response.content
         else:
-            logger.warning(f"Web search returned {response.status_code}: {response.text[:200]}")
-            return f"Web search unavailable (status {response.status_code}). Try asking the question directly."
+            return "No web results found for this query."
             
+    except ImportError as e:
+        logger.error(f"xai-sdk import error: {e}")
+        return "Web search unavailable (xai-sdk not installed)"
     except Exception as e:
-        logger.error(f"Web search error: {e}")
+        logger.error(f"Web search error: {e}", exc_info=True)
         return f"Web search error: {str(e)}"
 
 
