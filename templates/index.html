@@ -1240,6 +1240,7 @@
                         <label>Provider</label>
                         <select id="synthesisProvider">
                             <option value="browser">Browser (Web Speech API)</option>
+                            <option value="chatterbox">Chatterbox (Local GPU)</option>
                             <option value="edge_tts">Edge TTS (Free, Local)</option>
                             <option value="grok">Grok API</option>
                             <option value="openai_tts">OpenAI TTS</option>
@@ -2596,7 +2597,7 @@
                     console.log('[Groklexa] Using browser speech synthesis');
                     showStatus('🔊 Speaking...', 'speaking');
                     await synthesizeWithWebSpeech(aiResponse);
-                } else if (synthConfig?.provider === 'edge_tts' || synthConfig?.provider === 'openai_tts') {
+                } else if (synthConfig?.provider === 'edge_tts' || synthConfig?.provider === 'openai_tts' || synthConfig?.provider === 'chatterbox') {
                     console.log('[Groklexa] Using server-side synthesis:', synthConfig.provider);
                     showStatus('🔊 Speaking...', 'speaking');
                     await synthesizeWithServer(aiResponse);
@@ -3217,7 +3218,7 @@
             synthesisVoice.innerHTML = '<option value="">Loading voices...</option>';
             
             // Show/hide URL and Auth fields based on provider
-            if (provider === 'browser' || provider === 'edge_tts') {
+            if (provider === 'browser' || provider === 'edge_tts' || provider === 'chatterbox') {
                 synthesisUrlField.style.display = 'none';
                 synthesisAuthField.style.display = 'none';
             } else {

@@ -1191,6 +1191,19 @@ def synthesize():
             else:
                 return jsonify({'success': False, 'error': 'OpenAI TTS synthesis failed'}), 500
         
+        if provider == 'chatterbox':
+            # Use Chatterbox TTS with voice cloning
+            audio_data = synthesize_with_chatterbox(text, voice)
+            if audio_data:
+                import base64
+                return jsonify({
+                    'success': True,
+                    'audio_base64': base64.b64encode(audio_data).decode('utf-8'),
+                    'audio_format': 'wav'
+                })
+            else:
+                return jsonify({'success': False, 'error': 'Chatterbox synthesis failed. Check that voice reference exists.'}), 500
+        
         # For other providers, fallback to browser
         logger.warning(f"Server-side synthesis for {provider} not implemented, using browser")
         return jsonify({
@@ -1250,6 +1263,125 @@ def synthesize_with_openai_tts(url: str, auth: str, text: str, voice: str) -> by
     except Exception as e:
         logger.error(f"OpenAI TTS error: {e}")
         return None
+
+
+# Global Chatterbox model cache
+_chatterbox_model = None
+_chatterbox_model_loading = False
+
+
+def get_chatterbox_model():
+    """Get or load the Chatterbox TTS model (cached)."""
+    global _chatterbox_model, _chatterbox_model_loading
+    
+    if _chatterbox_model is not None:
+        return _chatterbox_model
+    
+    if _chatterbox_model_loading:
+        # Wait for model to load
+        import time
+        for _ in range(60):  # Wait up to 60 seconds
+            if _chatterbox_model is not None:
+                return _chatterbox_model
+            time.sleep(1)
+        return None
+    
+    try:
+        _chatterbox_model_loading = True
+        logger.info("Loading Chatterbox TTS model...")
+        
+        import torch
+        from chatterbox.tts_turbo import ChatterboxTurboTTS
+        
+        # Use CUDA if available, otherwise CPU
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Chatterbox using device: {device}")
+        
+        _chatterbox_model = ChatterboxTurboTTS.from_pretrained(device=device)
+        logger.info("Chatterbox model loaded successfully")
+        
+        return _chatterbox_model
+    except Exception as e:
+        logger.error(f"Failed to load Chatterbox model: {e}", exc_info=True)
+        return None
+    finally:
+        _chatterbox_model_loading = False
+
+
+def synthesize_with_chatterbox(text: str, voice_ref: str) -> bytes:
+    """Synthesize speech using Chatterbox TTS with voice cloning."""
+    import io
+    import torchaudio as ta
+    
+    logger.debug(f"Chatterbox synthesis: voice_ref={voice_ref}, text={text[:50]}...")
+    
+    try:
+        model = get_chatterbox_model()
+        if model is None:
+            logger.error("Chatterbox model not available")
+            return None
+        
+        # Build path to voice reference
+        voice_path = os.path.join('static', 'voices', voice_ref)
+        if not os.path.exists(voice_path):
+            logger.error(f"Voice reference not found: {voice_path}")
+            return None
+        
+        logger.info(f"Generating speech with Chatterbox (voice: {voice_ref})")
+        
+        # Generate audio
+        wav = model.generate(text, audio_prompt_path=voice_path)
+        
+        # Convert to bytes (WAV format)
+        audio_buffer = io.BytesIO()
+        ta.save(audio_buffer, wav, model.sr, format="wav")
+        audio_buffer.seek(0)
+        
+        logger.info(f"Chatterbox generated {len(audio_buffer.getvalue())} bytes")
+        return audio_buffer.getvalue()
+        
+    except Exception as e:
+        logger.error(f"Chatterbox synthesis error: {e}", exc_info=True)
+        return None
+
+
+@app.route('/api/voices/chatterbox', methods=['GET'])
+def get_chatterbox_voices():
+    """List available Chatterbox voice reference files."""
+    try:
+        voices_dir = os.path.join('static', 'voices')
+        
+        if not os.path.exists(voices_dir):
+            os.makedirs(voices_dir, exist_ok=True)
+            return jsonify({
+                'success': True,
+                'voices': [],
+                'message': 'No voice references found. Add .wav files to static/voices/'
+            })
+        
+        voices = []
+        for f in os.listdir(voices_dir):
+            if f.lower().endswith(('.wav', '.mp3', '.flac', '.ogg')):
+                # Create a friendly name from filename
+                name = os.path.splitext(f)[0].replace('_', ' ').replace('-', ' ').title()
+                voices.append({
+                    'id': f,
+                    'name': name
+                })
+        
+        voices.sort(key=lambda x: x['name'])
+        
+        return jsonify({
+            'success': True,
+            'voices': voices
+        })
+        
+    except Exception as e:
+        logger.error(f"Error listing Chatterbox voices: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
 if __name__ == '__main__':
