@@ -1,15 +1,23 @@
 # Groklexa
 
-A voice assistant with wake word detection, powered by XAI Realtime API.
+A grok (and local AI) friendly hands free web app for voice interactions with AI
+
+Groklexa is a fully in-browser voice assistant that wakes up when you say its custom wake word ("Groklexa" or whatever you choose), letting you chat hands-free with Grok without ever pressing a button.
 
 ## Features
 
-- 🎤 **Wake word detection** - Say "Groklexa" to wake, say it again to sleep
-- 🔊 **Voice conversations** - Real-time speech-to-text, inference, and text-to-speech
-- 🌙 **Day/Night modes** - Elegant UI with video animations
-- 🎯 **Silero VAD** - Neural network-based voice activity detection
-- ⚙️ **Configurable APIs** - Use XAI, Anthropic, OpenAI, or local endpoints
-- 📋 **Conversation history** - Persistent chat with copy/download options
+* 🎤 **Custom wake-word detection** running client-side as a 2MB voice model in the browser (powered by OpenWakeWord)
+* 🎯 **Voice activity detection (VAD)** - Neural network-based (Silero) for reliable start/stop
+* 🔊 **Real-time speech-to-text → Grok inference → text-to-speech pipeline**
+* 🎬 **Animated visual feedback** - A serene woman in headphones "wakes up" (head turn + subtle smile) when listening, drifts back to sleep when off
+* 📋 **Threaded conversation history** with copy, download, and manual clear
+* ⚙️ **All processing configurable** - Transcription, inference, and synthesis can all be configured to be remote cloud or local
+* 🔒 **100% client-side wake word and VAD** → no audio leaves your device until you speak after activation
+* 🌙 **Day/Night modes** - Elegant UI with theme switching
+
+Perfect for desktop always-on setups, kitchen counters, workshops, or just late-night philosophical rants when typing feels like too much work. Open source, hackable, and deliberately fun.
+
+<img width="1719" height="998" alt="Groklexa interface" src="https://github.com/user-attachments/assets/dc69893e-9a3d-4c71-8490-737120c7106d" />
 
 ## Quick Start
 
@@ -23,7 +31,7 @@ A voice assistant with wake word detection, powered by XAI Realtime API.
 
 ```bash
 # Clone and install dependencies
-git clone https://github.com/yourusername/groklexa.git
+git clone https://github.com/ixmon/groklexa.git
 cd groklexa
 uv sync
 ```
@@ -57,9 +65,7 @@ To access from other devices on your local network (required for microphone):
 
 1. **Generate SSL certificate:**
    ```bash
-   mkdir -p certs
-   openssl req -x509 -newkey rsa:4096 -keyout certs/key.pem -out certs/cert.pem -days 365 -nodes \
-     -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,DNS:*.home.arpa,IP:127.0.0.1"
+   ./tools/generate_cert.sh
    ```
 
 2. **Start server and access via HTTPS**
@@ -116,7 +122,7 @@ asyncio.run(main())
 ## Technology
 
 - **XAI Realtime API** - Unified transcription, inference, and synthesis via WebSocket
-- **OpenWakeWord** - Browser-based wake word detection with ONNX Runtime
+- **OpenWakeWord** - Browser-based wake word detection with ONNX Runtime Web
 - **Silero VAD** - Neural network voice activity detection
 - **Flask** - Python web server
 - **Web Audio API** - Real-time audio processing
