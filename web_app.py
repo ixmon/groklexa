@@ -864,6 +864,8 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, enab
     }
     
     # Define available tools
+    # Note: search_x and search_web are disabled - xAI doesn't have a public Agent Tools API
+    # TODO: Integrate with Brave Search, SerpAPI, or Tavily for real search functionality
     tools = [
         {
             "type": "function",
@@ -881,41 +883,12 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, enab
                     "required": []
                 }
             }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_x",
-                "description": "Search X (formerly Twitter) for posts, news, and discussions. Use this when the user asks about recent events, trending topics, what people are saying, or needs real-time information from social media.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query for X"
-                        }
-                    },
-                    "required": ["query"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_web",
-                "description": "Search the web for information. Use this when the user asks about facts, news, or information that may require looking up current data.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query for the web"
-                        }
-                    },
-                    "required": ["query"]
-                }
-            }
         }
+        # Search tools disabled - xAI Agent Tools API returns 404
+        # To enable search, integrate with:
+        # - Brave Search API (https://brave.com/search/api/)
+        # - SerpAPI (https://serpapi.com/)
+        # - Tavily (https://tavily.com/)
     ] if enable_tools else None
     
     payload = {
