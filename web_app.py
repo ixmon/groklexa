@@ -55,45 +55,119 @@ AUTH_UNCHANGED = '__UNCHANGED__'
 AUTH_MASK = '••••••••••••'
 
 
+def get_default_persona():
+    """Get the default persona configuration."""
+    return {
+        "name": "Groklexa",
+        "prompt": "You are Groklexa, a friendly and witty voice assistant. You speak naturally and conversationally, like a helpful friend who happens to know a lot about everything.",
+        "mode": "single",
+        "single": {
+            "provider": "xai_realtime",
+            "url": "wss://api.x.ai/v1/realtime",
+            "auth": "",
+            "voice": "Ara",
+            "protocol": "xai_realtime"
+        },
+        "transcription": {
+            "provider": "browser",
+            "url": "",
+            "auth": "",
+            "protocol": "browser_speech_api"
+        },
+        "inference": {
+            "provider": "grok",
+            "url": "https://api.x.ai/v1/chat/completions",
+            "auth": "",
+            "protocol": "openai_compatible",
+            "model": "grok-3"
+        },
+        "synthesis": {
+            "provider": "grok",
+            "url": "wss://api.x.ai/v1/realtime",
+            "auth": "",
+            "protocol": "xai_realtime",
+            "voice": "Ara"
+        },
+        "tools": {
+            "get_current_datetime": True,
+            "search_x": True,
+            "search_web": True
+        }
+    }
+
+
+def migrate_legacy_config(config):
+    """Migrate legacy config (without personas) to new persona-based format."""
+    if 'personas' in config:
+        return config  # Already migrated
+    
+    # Create a default persona from existing settings
+    persona = get_default_persona()
+    persona['name'] = 'Groklexa'
+    
+    # Copy existing settings into the persona
+    for key in ['mode', 'single', 'transcription', 'inference', 'synthesis']:
+        if key in config:
+            persona[key] = config[key]
+    
+    # Preserve any existing prompt
+    if 'prompt' in config:
+        persona['prompt'] = config['prompt']
+    
+    # Preserve model cache if present
+    model_cache = config.get('_model_cache', {})
+    
+    return {
+        'active_persona': 'default',
+        'personas': {
+            'default': persona
+        },
+        '_model_cache': model_cache
+    }
+
+
 def load_config():
     """Load API configuration from file."""
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+            config = json.load(f)
+            return migrate_legacy_config(config)
     elif CONFIG_EXAMPLE.exists():
         with open(CONFIG_EXAMPLE, 'r') as f:
-            return json.load(f)
+            config = json.load(f)
+            return migrate_legacy_config(config)
     else:
-        # Default config - no env fallback, user must configure via UI
+        # Default config with personas
         return {
-            "mode": "single",
-            "single": {
-                "provider": "xai_realtime",
-                "url": "wss://api.x.ai/v1/realtime",
-                "auth": "",  # User must configure via settings
-                "protocol": "xai_realtime"
+            'active_persona': 'default',
+            'personas': {
+                'default': get_default_persona()
             },
-            "transcription": {
-                "provider": "browser",
-                "url": "",
-                "auth": "",
-                "protocol": "browser_speech_api"
-            },
-            "inference": {
-                "provider": "grok",
-                "url": "https://api.x.ai/v1/chat/completions",
-                "auth": "",  # User must configure via settings
-                "protocol": "openai_compatible",
-                "model": "grok-3"
-            },
-            "synthesis": {
-                "provider": "grok",
-                "url": "wss://api.x.ai/v1/realtime",
-                "auth": "",  # User must configure via settings
-                "protocol": "xai_realtime",
-                "voice": "Ara"
-            }
+            '_model_cache': {}
         }
+
+
+def get_active_persona(config=None):
+    """Get the currently active persona configuration."""
+    if config is None:
+        config = load_config()
+    
+    active_id = config.get('active_persona', 'default')
+    personas = config.get('personas', {})
+    
+    if active_id in personas:
+        persona = personas[active_id]
+        persona['_id'] = active_id  # Include the ID
+        return persona
+    
+    # Fallback to first persona or default
+    if personas:
+        first_id = list(personas.keys())[0]
+        persona = personas[first_id]
+        persona['_id'] = first_id
+        return persona
+    
+    return get_default_persona()
 
 
 def save_config(config):
@@ -107,10 +181,19 @@ def mask_auth(config):
     """Mask auth strings for safe transmission to frontend."""
     masked = json.loads(json.dumps(config))  # Deep copy
     
-    for section in ['single', 'transcription', 'inference', 'synthesis']:
-        if section in masked and 'auth' in masked[section]:
-            if masked[section]['auth']:
-                masked[section]['auth'] = AUTH_MASK
+    # Handle persona-based config
+    if 'personas' in masked:
+        for persona_id, persona in masked['personas'].items():
+            for section in ['single', 'transcription', 'inference', 'synthesis']:
+                if section in persona and 'auth' in persona[section]:
+                    if persona[section]['auth']:
+                        persona[section]['auth'] = AUTH_MASK
+    else:
+        # Legacy format
+        for section in ['single', 'transcription', 'inference', 'synthesis']:
+            if section in masked and 'auth' in masked[section]:
+                if masked[section]['auth']:
+                    masked[section]['auth'] = AUTH_MASK
     
     return masked
 
@@ -151,12 +234,25 @@ def get_config():
     config = load_config()
     masked = mask_auth(config)
     
-    # Add detected models
+    # Get active persona for convenience
+    active_persona = get_active_persona(config)
+    
+    # Add detected models to active persona
     for section in ['single', 'transcription', 'inference', 'synthesis']:
-        if section in config and 'url' in config[section]:
-            detected = detect_model_from_url(config[section]['url'])
+        if section in active_persona and 'url' in active_persona[section]:
+            detected = detect_model_from_url(active_persona[section]['url'])
             if detected:
-                masked[section]['detected_model'] = detected
+                if 'personas' in masked:
+                    active_id = config.get('active_persona', 'default')
+                    if active_id in masked['personas']:
+                        masked['personas'][active_id][section]['detected_model'] = detected
+    
+    # Also include a flattened view of active persona for backward compatibility
+    active_id = config.get('active_persona', 'default')
+    if 'personas' in masked and active_id in masked['personas']:
+        active = masked['personas'][active_id].copy()
+        active['_id'] = active_id
+        masked['active'] = active
     
     return jsonify({
         'success': True,
@@ -166,7 +262,7 @@ def get_config():
 
 @app.route('/api/config', methods=['POST'])
 def set_config():
-    """Save API configuration."""
+    """Save API configuration (supports both legacy and persona-based)."""
     try:
         new_config = request.json
         if not new_config:
@@ -175,13 +271,46 @@ def set_config():
         # Load existing config to preserve unchanged auth strings
         existing_config = load_config()
         
-        # Process each section
-        for section in ['single', 'transcription', 'inference', 'synthesis']:
-            if section in new_config and 'auth' in new_config[section]:
-                # If auth is masked placeholder, keep existing
-                if new_config[section]['auth'] in [AUTH_UNCHANGED, AUTH_MASK, '']:
-                    if section in existing_config and 'auth' in existing_config[section]:
-                        new_config[section]['auth'] = existing_config[section]['auth']
+        # Check if this is a persona-based config
+        if 'personas' in new_config:
+            # New persona-based format
+            for persona_id, persona in new_config['personas'].items():
+                existing_persona = existing_config.get('personas', {}).get(persona_id, {})
+                for section in ['single', 'transcription', 'inference', 'synthesis']:
+                    if section in persona and 'auth' in persona[section]:
+                        if persona[section]['auth'] in [AUTH_UNCHANGED, AUTH_MASK, '']:
+                            if section in existing_persona and 'auth' in existing_persona[section]:
+                                persona[section]['auth'] = existing_persona[section]['auth']
+            
+            # Preserve model cache
+            if '_model_cache' in existing_config:
+                new_config['_model_cache'] = existing_config['_model_cache']
+        else:
+            # Legacy format - convert to persona format
+            for section in ['single', 'transcription', 'inference', 'synthesis']:
+                if section in new_config and 'auth' in new_config[section]:
+                    if new_config[section]['auth'] in [AUTH_UNCHANGED, AUTH_MASK, '']:
+                        active_persona = get_active_persona(existing_config)
+                        if section in active_persona and 'auth' in active_persona[section]:
+                            new_config[section]['auth'] = active_persona[section]['auth']
+            
+            # Wrap in persona format
+            active_id = existing_config.get('active_persona', 'default')
+            personas = existing_config.get('personas', {})
+            
+            # Update the active persona with new settings
+            if active_id in personas:
+                for key in ['mode', 'single', 'transcription', 'inference', 'synthesis', 'prompt']:
+                    if key in new_config:
+                        personas[active_id][key] = new_config[key]
+            else:
+                personas[active_id] = new_config
+            
+            new_config = {
+                'active_persona': active_id,
+                'personas': personas,
+                '_model_cache': existing_config.get('_model_cache', {})
+            }
         
         save_config(new_config)
         
@@ -190,10 +319,210 @@ def set_config():
             'message': 'Configuration saved'
         })
     except Exception as e:
+        logger.error(f"Error saving config: {e}", exc_info=True)
         return jsonify({
             'success': False,
             'error': str(e)
         }), 500
+
+
+# ========== PERSONA MANAGEMENT ==========
+
+@app.route('/api/personas', methods=['GET'])
+def list_personas():
+    """List all available personas."""
+    config = load_config()
+    personas = config.get('personas', {})
+    active_id = config.get('active_persona', 'default')
+    
+    # Return list with masked auth
+    persona_list = []
+    for pid, persona in personas.items():
+        persona_list.append({
+            'id': pid,
+            'name': persona.get('name', pid),
+            'prompt': persona.get('prompt', '')[:100] + '...' if len(persona.get('prompt', '')) > 100 else persona.get('prompt', ''),
+            'active': pid == active_id
+        })
+    
+    return jsonify({
+        'success': True,
+        'personas': persona_list,
+        'active_persona': active_id
+    })
+
+
+@app.route('/api/personas/switch', methods=['POST'])
+def switch_persona():
+    """Switch to a different persona."""
+    try:
+        data = request.json
+        persona_id = data.get('persona_id')
+        
+        if not persona_id:
+            return jsonify({'success': False, 'error': 'No persona_id provided'}), 400
+        
+        config = load_config()
+        
+        if persona_id not in config.get('personas', {}):
+            return jsonify({'success': False, 'error': f'Persona {persona_id} not found'}), 404
+        
+        config['active_persona'] = persona_id
+        save_config(config)
+        
+        # Return the full active persona config (masked)
+        masked = mask_auth(config)
+        active = masked['personas'][persona_id].copy()
+        active['_id'] = persona_id
+        
+        return jsonify({
+            'success': True,
+            'message': f'Switched to persona: {active.get("name", persona_id)}',
+            'active': active
+        })
+    except Exception as e:
+        logger.error(f"Error switching persona: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/personas', methods=['POST'])
+def create_persona():
+    """Create a new persona."""
+    try:
+        data = request.json
+        persona_id = data.get('id')
+        persona_data = data.get('persona', {})
+        
+        if not persona_id:
+            # Generate ID from name
+            name = persona_data.get('name', 'New Persona')
+            persona_id = name.lower().replace(' ', '_').replace('-', '_')
+            # Make unique
+            import time
+            persona_id = f"{persona_id}_{int(time.time()) % 10000}"
+        
+        config = load_config()
+        
+        # Start with default and merge provided data
+        new_persona = get_default_persona()
+        for key in persona_data:
+            if key in new_persona:
+                if isinstance(new_persona[key], dict) and isinstance(persona_data[key], dict):
+                    new_persona[key].update(persona_data[key])
+                else:
+                    new_persona[key] = persona_data[key]
+        
+        config['personas'][persona_id] = new_persona
+        save_config(config)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Created persona: {new_persona.get("name", persona_id)}',
+            'persona_id': persona_id
+        })
+    except Exception as e:
+        logger.error(f"Error creating persona: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/personas/<persona_id>', methods=['PUT'])
+def update_persona(persona_id):
+    """Update an existing persona."""
+    try:
+        data = request.json
+        
+        config = load_config()
+        
+        if persona_id not in config.get('personas', {}):
+            return jsonify({'success': False, 'error': f'Persona {persona_id} not found'}), 404
+        
+        existing = config['personas'][persona_id]
+        
+        # Update fields
+        for key in data:
+            if key.startswith('_'):
+                continue  # Skip internal fields
+            if key in existing:
+                if isinstance(existing[key], dict) and isinstance(data[key], dict):
+                    # Handle auth masking
+                    if 'auth' in data[key] and data[key]['auth'] in [AUTH_UNCHANGED, AUTH_MASK]:
+                        data[key]['auth'] = existing[key].get('auth', '')
+                    existing[key].update(data[key])
+                else:
+                    existing[key] = data[key]
+        
+        save_config(config)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Updated persona: {existing.get("name", persona_id)}'
+        })
+    except Exception as e:
+        logger.error(f"Error updating persona: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/personas/<persona_id>', methods=['DELETE'])
+def delete_persona(persona_id):
+    """Delete a persona."""
+    try:
+        config = load_config()
+        
+        if persona_id not in config.get('personas', {}):
+            return jsonify({'success': False, 'error': f'Persona {persona_id} not found'}), 404
+        
+        # Can't delete the last persona
+        if len(config['personas']) <= 1:
+            return jsonify({'success': False, 'error': 'Cannot delete the last persona'}), 400
+        
+        # Can't delete active persona without switching first
+        if config.get('active_persona') == persona_id:
+            # Switch to another persona
+            other_id = [k for k in config['personas'].keys() if k != persona_id][0]
+            config['active_persona'] = other_id
+        
+        del config['personas'][persona_id]
+        save_config(config)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Deleted persona: {persona_id}',
+            'active_persona': config['active_persona']
+        })
+    except Exception as e:
+        logger.error(f"Error deleting persona: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/personas/<persona_id>/duplicate', methods=['POST'])
+def duplicate_persona(persona_id):
+    """Duplicate an existing persona."""
+    try:
+        config = load_config()
+        
+        if persona_id not in config.get('personas', {}):
+            return jsonify({'success': False, 'error': f'Persona {persona_id} not found'}), 404
+        
+        # Deep copy the persona
+        original = config['personas'][persona_id]
+        new_persona = json.loads(json.dumps(original))
+        new_persona['name'] = f"{original.get('name', persona_id)} (Copy)"
+        
+        # Generate new ID
+        import time
+        new_id = f"{persona_id}_copy_{int(time.time()) % 10000}"
+        
+        config['personas'][new_id] = new_persona
+        save_config(config)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Duplicated persona as: {new_persona["name"]}',
+            'persona_id': new_id
+        })
+    except Exception as e:
+        logger.error(f"Error duplicating persona: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/config/test', methods=['POST'])
@@ -287,22 +616,27 @@ PROVIDER_VOICES = {
 _edge_tts_voices_cache = None
 
 # Local Whisper model (lazy loaded)
+# Using OpenAI's whisper package (PyTorch-based) for CUDA support on aarch64
 _whisper_model = None
-_whisper_model_size = 'base'  # Options: tiny, base, small, medium, large-v3
+_whisper_model_size = 'base'  # Options: tiny, base, small, medium, large
 
 
 def get_whisper_model():
-    """Get or initialize the local Whisper model."""
+    """Get or initialize the local Whisper model (OpenAI whisper with PyTorch/CUDA)."""
     global _whisper_model
     if _whisper_model is not None:
         return _whisper_model
     
     try:
-        from faster_whisper import WhisperModel
-        logger.info(f"Loading Whisper model: {_whisper_model_size}")
-        # Use CPU by default, can be changed to 'cuda' for GPU
-        _whisper_model = WhisperModel(_whisper_model_size, device="cpu", compute_type="int8")
-        logger.info("Whisper model loaded successfully")
+        import torch
+        import whisper
+        
+        # Use CUDA if available
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Loading Whisper model: {_whisper_model_size} on {device}")
+        
+        _whisper_model = whisper.load_model(_whisper_model_size, device=device)
+        logger.info(f"Whisper model loaded successfully on {device}")
         return _whisper_model
     except Exception as e:
         logger.error(f"Failed to load Whisper model: {e}")
@@ -310,17 +644,26 @@ def get_whisper_model():
 
 
 def transcribe_with_local_whisper(audio_path: str) -> str:
-    """Transcribe audio using local Whisper model."""
+    """Transcribe audio using local Whisper model (OpenAI whisper with PyTorch)."""
+    import time
+    
+    t0 = time.time()
     model = get_whisper_model()
+    t1 = time.time()
+    
     if model is None:
         raise Exception("Whisper model not available")
     
-    logger.debug(f"Transcribing with local Whisper: {audio_path}")
+    logger.debug(f"Transcribing with local Whisper: {audio_path} (model fetch: {(t1-t0)*1000:.0f}ms)")
     
     try:
-        segments, info = model.transcribe(audio_path, beam_size=5)
-        transcript = " ".join([segment.text for segment in segments])
-        logger.info(f"Local Whisper transcription: {transcript[:100]}...")
+        # OpenAI whisper returns a dict with 'text' key
+        t2 = time.time()
+        result = model.transcribe(audio_path, language="en")
+        t3 = time.time()
+        
+        transcript = result.get("text", "")
+        logger.info(f"Local Whisper transcription ({(t3-t2)*1000:.0f}ms): {transcript[:100]}...")
         return transcript.strip()
     except Exception as e:
         logger.error(f"Local Whisper transcription error: {e}")
@@ -409,14 +752,15 @@ def get_provider_models(provider):
         
         # Load config to get auth and cached models
         config = load_config()
-        mode = config.get('mode', 'single')
+        active_persona = get_active_persona(config)
+        mode = active_persona.get('mode', 'separate')
         
         if mode == 'single':
-            api_config = config.get('single', {})
+            api_config = active_persona.get('single', {})
         else:
-            api_config = config.get('inference', {})
+            api_config = active_persona.get('inference', {})
         
-        auth = api_config.get('auth', '')
+        auth = api_config.get('auth', '') or os.environ.get('XAI_API_KEY', '')
         
         # Check cache
         cached_models = config.get('_cached_models', {})
@@ -660,16 +1004,18 @@ def transcribe():
         
         logger.info(f"Transcription request: {audio_file.filename}")
         
-        # Load config
+        # Load config from active persona
         config = load_config()
-        mode = config.get('mode', 'single')
+        active_persona = get_active_persona(config)
+        mode = active_persona.get('mode', 'separate')
         
         if mode == 'single':
-            api_config = config.get('single', {})
+            api_config = active_persona.get('single', {})
         else:
-            api_config = config.get('transcription', {})
+            api_config = active_persona.get('transcription', {})
         
         provider = api_config.get('provider', 'browser')
+        logger.info(f"Transcription provider: {provider}")
         
         if provider == 'browser':
             # Browser-based transcription should be handled client-side
@@ -779,6 +1125,69 @@ def transcribe_with_google(url: str, auth: str, audio_path: str) -> str:
     return ''
 
 
+def get_system_prompt(synthesis_provider: str, custom_prompt: str = None) -> str:
+    """Generate a system prompt tailored to the TTS provider being used."""
+    
+    # Use custom prompt from persona if provided, otherwise default
+    if custom_prompt:
+        base_prompt = custom_prompt
+    else:
+        base_prompt = """You are Groklexa, a friendly and witty voice assistant. You speak naturally and conversationally, like a helpful friend who happens to know a lot about everything."""
+    
+    # TTS-specific formatting guidance
+    tts_guidance = {
+        'chatterbox': """
+Your responses will be spoken aloud using Chatterbox voice cloning. For best results:
+- Write naturally as if speaking - contractions, casual phrasing, natural pauses
+- Avoid special characters, emojis, or formatting that won't speak well
+- Use punctuation for pacing: commas for brief pauses, periods for longer pauses
+- Spell out abbreviations and numbers (say "twenty-five" not "25")
+- Keep responses concise - aim for 1-3 sentences unless more detail is needed
+- Express emotion through word choice, not symbols""",
+        
+        'edge_tts': """
+Your responses will be spoken aloud using Edge TTS. For best results:
+- Write naturally as if speaking - contractions, casual phrasing
+- Avoid emojis and special characters
+- Use punctuation for pacing
+- Keep responses conversational and concise
+- Spell out abbreviations when natural to do so""",
+        
+        'browser': """
+Your responses will be spoken aloud using browser text-to-speech. For best results:
+- Keep sentences short and clear
+- Avoid special characters and emojis
+- Use simple punctuation for natural pacing
+- Be concise - browser TTS works best with shorter responses""",
+        
+        'openai_tts': """
+Your responses will be spoken aloud using OpenAI TTS. For best results:
+- Write naturally and conversationally
+- Use punctuation for expression and pacing
+- Avoid excessive formatting or special characters
+- You can be more expressive as OpenAI TTS handles nuance well""",
+        
+        'elevenlabs': """
+Your responses will be spoken aloud using ElevenLabs. For best results:
+- Write naturally with good emotional expression
+- Use punctuation creatively for pacing and emphasis
+- Avoid special characters but express emotion through words
+- ElevenLabs handles nuance well, so be expressive""",
+    }
+    
+    # Default guidance for unknown providers
+    default_guidance = """
+Your responses will be spoken aloud. For best results:
+- Write naturally as if speaking
+- Avoid emojis and special formatting
+- Use punctuation for pacing
+- Keep responses concise and conversational"""
+    
+    guidance = tts_guidance.get(synthesis_provider, default_guidance)
+    
+    return f"{base_prompt}\n{guidance}"
+
+
 @app.route('/api/infer/text', methods=['POST'])
 def infer_text():
     """Text-based inference - takes transcribed text, returns AI response."""
@@ -795,16 +1204,19 @@ def infer_text():
         
         logger.info(f"Text inference request: {text[:100]}...")
         
-        # Load config to determine which provider to use
+        # Load active persona configuration
         config = load_config()
-        mode = config.get('mode', 'single')
+        persona = get_active_persona(config)
+        mode = persona.get('mode', 'single')
         
         if mode == 'single':
             # Use single API config
-            api_config = config.get('single', {})
+            api_config = persona.get('single', {})
+            synth_config = persona.get('single', {})
         else:
-            # Use separate inference config
-            api_config = config.get('inference', {})
+            # Use separate configs
+            api_config = persona.get('inference', {})
+            synth_config = persona.get('synthesis', {})
         
         provider = api_config.get('provider', 'grok')
         url = api_config.get('url', '')
@@ -812,10 +1224,16 @@ def infer_text():
         protocol = api_config.get('protocol', 'openai_compatible')
         model = api_config.get('model', 'grok-3')
         
-        logger.info(f"Using inference: provider={provider}, model={model}")
+        # Get synthesis provider and persona's custom prompt
+        synth_provider = synth_config.get('provider', 'browser')
+        custom_prompt = persona.get('prompt', None)
         
-        # Build messages array
-        messages = []
+        logger.info(f"Using inference: provider={provider}, model={model}, synth={synth_provider}, persona={persona.get('name', 'default')}")
+        
+        # Build messages array with system prompt (using persona's custom prompt)
+        system_prompt = get_system_prompt(synth_provider, custom_prompt)
+        messages = [{'role': 'system', 'content': system_prompt}]
+        
         for msg in conversation_history:
             role = msg.get('role', 'user')
             content = msg.get('content', '')
@@ -829,7 +1247,9 @@ def infer_text():
         openai_compatible_protocols = ['openai_compatible', 'grok', 'openai', 'ollama', 'xai_realtime']
         
         if protocol in openai_compatible_protocols:
-            response_text = call_openai_compatible(url, auth, model, messages)
+            # Disable tools for Ollama - most small local models don't handle function calling well
+            enable_tools = protocol != 'ollama'
+            response_text = call_openai_compatible(url, auth, model, messages, enable_tools=enable_tools)
         elif protocol in ['anthropic_messages', 'anthropic']:
             response_text = call_anthropic(url, auth, model, messages)
         elif protocol == 'browser_speech_api':
@@ -1123,7 +1543,7 @@ def call_anthropic(url: str, auth: str, model: str, messages: list) -> str:
     if system_msg:
         payload['system'] = system_msg
     
-    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    response = requests.post(url, headers=headers, json=payload, timeout=120)
     response.raise_for_status()
     
     data = response.json()
@@ -1144,17 +1564,20 @@ def synthesize():
         
         logger.info(f"Synthesis request: {text[:100]}...")
         
-        # Load config
+        # Load config from active persona
         config = load_config()
-        mode = config.get('mode', 'single')
+        active_persona = get_active_persona(config)
+        mode = active_persona.get('mode', 'separate')
         
         if mode == 'single':
-            api_config = config.get('single', {})
+            api_config = active_persona.get('single', {})
         else:
-            api_config = config.get('synthesis', {})
+            api_config = active_persona.get('synthesis', {})
         
-        provider = api_config.get('provider', 'grok')
+        provider = api_config.get('provider', 'browser')
         voice = api_config.get('voice', 'Ara')
+        
+        logger.info(f"Synthesis provider: {provider}, voice: {voice}")
         
         if provider == 'browser':
             # Return text for client-side synthesis
@@ -1311,15 +1734,23 @@ def get_chatterbox_model():
 def synthesize_with_chatterbox(text: str, voice_ref: str) -> bytes:
     """Synthesize speech using Chatterbox TTS with voice cloning."""
     import io
-    import torchaudio as ta
+    import time
+    import numpy as np
+    from scipy.io import wavfile
     
+    t0 = time.time()
     logger.debug(f"Chatterbox synthesis: voice_ref={voice_ref}, text={text[:50]}...")
     
     try:
+        t1 = time.time()
         model = get_chatterbox_model()
+        t2 = time.time()
+        
         if model is None:
             logger.error("Chatterbox model not available")
             return None
+        
+        logger.debug(f"Chatterbox model fetch: {(t2-t1)*1000:.0f}ms")
         
         # Build path to voice reference
         voice_path = os.path.join('static', 'voices', voice_ref)
@@ -1330,11 +1761,18 @@ def synthesize_with_chatterbox(text: str, voice_ref: str) -> bytes:
         logger.info(f"Generating speech with Chatterbox (voice: {voice_ref})")
         
         # Generate audio
+        t3 = time.time()
         wav = model.generate(text, audio_prompt_path=voice_path)
+        t4 = time.time()
+        logger.info(f"Chatterbox generation: {(t4-t3)*1000:.0f}ms")
         
-        # Convert to bytes (WAV format)
+        # Convert tensor to numpy and save as WAV using scipy
+        audio_np = wav.squeeze().cpu().numpy()
+        # Normalize to int16 range for WAV
+        audio_int16 = (audio_np * 32767).astype(np.int16)
+        
         audio_buffer = io.BytesIO()
-        ta.save(audio_buffer, wav, model.sr, format="wav")
+        wavfile.write(audio_buffer, model.sr, audio_int16)
         audio_buffer.seek(0)
         
         logger.info(f"Chatterbox generated {len(audio_buffer.getvalue())} bytes")

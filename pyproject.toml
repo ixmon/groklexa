@@ -17,7 +17,7 @@ requires-python = ">=3.11"
 dependencies = [
     "chatterbox-tts>=0.1.6",
     "edge-tts>=7.2.7",
-    "faster-whisper>=1.2.1",
+    "openai-whisper>=20250625",  # Uses PyTorch directly, works with CUDA on aarch64
     "flask>=3.1.2",
     "pydub>=0.25.1",
     "pytz>=2024.1",
@@ -25,6 +25,23 @@ dependencies = [
     "websockets>=15.0.1",
     "xai-sdk>=1.5.0",
 ]
+
+# Override conflicting dependency versions
+[tool.uv]
+# Allow best-match across indexes (needed for mixed PyPI + PyTorch nightly)
+index-strategy = "unsafe-best-match"
+override-dependencies = [
+    "onnx<1.17.0",
+    "ml-dtypes>=0.5.0",
+    # Use PyTorch nightly with CUDA for GB10/Blackwell
+    "torch>=2.11.0.dev0",
+    "torchaudio>=2.10.0.dev0",
+]
+
+# PyTorch nightly index for CUDA 13.0 support (required for GB10/Blackwell)
+[[tool.uv.index]]
+name = "pytorch-nightly"
+url = "https://download.pytorch.org/whl/nightly/cu130"
 
 [project.optional-dependencies]
 dev = [

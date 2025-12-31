@@ -596,6 +596,144 @@
             flex-shrink: 0;
         }
         
+        /* Persona Section */
+        .persona-section {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--glass-border);
+        }
+        
+        .persona-selector {
+            margin-bottom: 12px;
+        }
+        
+        .persona-selector label {
+            display: block;
+            margin-bottom: 8px;
+            color: var(--text-muted);
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+        
+        .persona-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        .persona-controls select {
+            flex: 1;
+            padding: 10px 14px;
+            border: 1px solid var(--accent-light);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.6);
+            font-family: 'Raleway', sans-serif;
+            font-size: 14px;
+            color: var(--text-dark);
+            cursor: pointer;
+        }
+        
+        .persona-controls select:hover {
+            border-color: var(--accent);
+        }
+        
+        .persona-controls .icon-btn {
+            width: 36px;
+            height: 36px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid var(--accent-light);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.5);
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .persona-controls .icon-btn:hover {
+            border-color: var(--accent);
+            background: rgba(255, 255, 255, 0.8);
+            color: var(--text-dark);
+        }
+        
+        .prompt-details {
+            margin-top: 12px;
+        }
+        
+        .prompt-details summary {
+            cursor: pointer;
+            font-size: 12px;
+            color: var(--text-muted);
+            padding: 8px 0;
+            user-select: none;
+        }
+        
+        .prompt-details summary:hover {
+            color: var(--text-dark);
+        }
+        
+        .prompt-details[open] summary {
+            margin-bottom: 8px;
+        }
+        
+        #personaPrompt {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--accent-light);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.6);
+            font-family: 'Raleway', sans-serif;
+            font-size: 13px;
+            line-height: 1.5;
+            resize: vertical;
+            min-height: 80px;
+        }
+        
+        #personaPrompt:focus {
+            outline: none;
+            border-color: var(--warm-brown);
+            box-shadow: 0 0 0 3px rgba(156, 139, 122, 0.2);
+        }
+        
+        .btn-save-prompt {
+            margin-top: 8px;
+            padding: 8px 16px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+        
+        .btn-save-prompt:hover {
+            background: var(--warm-brown);
+        }
+        
+        /* Night mode persona styles */
+        [data-theme="night"] .persona-controls select {
+            background: rgba(20, 20, 30, 0.9);
+            border-color: var(--accent-light);
+            color: var(--text-dark);
+        }
+        
+        [data-theme="night"] .persona-controls .icon-btn {
+            background: rgba(20, 20, 30, 0.8);
+            border-color: var(--accent-light);
+        }
+        
+        [data-theme="night"] #personaPrompt {
+            background: rgba(20, 20, 30, 0.9);
+            border-color: var(--accent-light);
+            color: var(--text-dark);
+        }
+        
         .settings-panel .btn-ghost {
             width: 100%;
             flex-shrink: 0;
@@ -1077,15 +1215,29 @@
     <div class="settings-panel" id="settingsPanel">
         <h3>Settings</h3>
         
-        <div class="voice-selector">
-            <label for="voice">Voice</label>
-            <select id="voice">
-                <option value="Ara">Ara</option>
-                <option value="Rex">Rex</option>
-                <option value="Sal">Sal</option>
-                <option value="Eve">Eve</option>
-                <option value="Leo">Leo</option>
-            </select>
+        <!-- Persona Selector -->
+        <div class="persona-section">
+            <div class="persona-selector">
+                <label for="personaSelect">Persona</label>
+                <div class="persona-controls">
+                    <select id="personaSelect">
+                        <option value="default">Groklexa</option>
+                    </select>
+                    <button class="icon-btn persona-edit-btn" id="personaEditBtn" title="Edit persona">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                    </button>
+                    <button class="icon-btn persona-add-btn" id="personaAddBtn" title="Create new persona">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Prompt Textarea (collapsible) -->
+            <details class="prompt-details">
+                <summary>System Prompt</summary>
+                <textarea id="personaPrompt" rows="4" placeholder="Enter the system prompt for this persona..."></textarea>
+                <button class="btn-save-prompt" id="savePromptBtn">Save Prompt</button>
+            </details>
         </div>
         
         <div class="vad-toggle">
@@ -1463,7 +1615,6 @@
         const resultContent = document.getElementById('resultContent');
         const chatLogContainer = document.getElementById('chatLogContainer');
         const chatLogEmpty = document.getElementById('chatLogEmpty');
-        const voiceSelect = document.getElementById('voice');
         const vadToggle = document.getElementById('vadToggle');
         const copyLogBtn = document.getElementById('copyLogBtn');
         const downloadAudioBtn = document.getElementById('downloadAudioBtn');
@@ -1637,13 +1788,20 @@
 
         // ========== CONVERSATION HISTORY ==========
         
+        function getHistoryKey() {
+            return `groklexaHistory_${currentPersonaId}`;
+        }
+        
         function loadConversationHistory() {
             try {
-                const saved = localStorage.getItem('groklexaHistory');
+                const saved = localStorage.getItem(getHistoryKey());
                 if (saved) {
                     conversationHistory = JSON.parse(saved);
-                    console.log('Loaded conversation history:', conversationHistory.length, 'messages');
+                    console.log(`Loaded conversation history for ${currentPersonaId}:`, conversationHistory.length, 'messages');
+                } else {
+                    conversationHistory = [];
                 }
+                updateChatLogUI();
             } catch (e) {
                 console.error('Failed to load history:', e);
                 conversationHistory = [];
@@ -1652,7 +1810,7 @@
         
         function saveConversationHistory() {
             try {
-                localStorage.setItem('groklexaHistory', JSON.stringify(conversationHistory));
+                localStorage.setItem(getHistoryKey(), JSON.stringify(conversationHistory));
             } catch (e) {
                 console.error('Failed to save history:', e);
             }
@@ -1665,10 +1823,27 @@
         
         function clearHistory() {
             conversationHistory = [];
-            localStorage.removeItem('groklexaHistory');
+            localStorage.removeItem(getHistoryKey());
             resultContent.innerHTML = '';
             result.classList.add('hidden');
-            console.log('Conversation history cleared');
+            updateChatLogUI();
+            console.log(`Conversation history cleared for ${currentPersonaId}`);
+        }
+        
+        function updateChatLogUI() {
+            // Update the chat log display
+            if (conversationHistory.length > 0) {
+                chatLogContainer.classList.remove('hidden');
+                chatLogEmpty.classList.add('hidden');
+            } else {
+                chatLogContainer.classList.add('hidden');
+                chatLogEmpty.classList.remove('hidden');
+            }
+        }
+        
+        // Alias for persona switching
+        function loadHistory() {
+            loadConversationHistory();
         }
         
         loadConversationHistory();
@@ -1706,7 +1881,12 @@
                 const url = URL.createObjectURL(lastAudioBlob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `groklexa-response-${Date.now()}.wav`;
+                // Determine file extension from MIME type
+                let ext = 'wav';
+                if (lastAudioBlob.type === 'audio/mpeg') ext = 'mp3';
+                else if (lastAudioBlob.type === 'audio/wav') ext = 'wav';
+                else if (lastAudioBlob.type === 'audio/webm') ext = 'webm';
+                a.download = `groklexa-response-${Date.now()}.${ext}`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -2464,7 +2644,7 @@
             const formData = new FormData();
             const audioFile = new File([blob], 'recording.mp3', { type: 'audio/mpeg' });
             formData.append('audio', audioFile);
-            formData.append('voice', voiceSelect.value);
+            formData.append('voice', document.getElementById('singleVoice')?.value || 'Ara');
             formData.append('conversation_history', JSON.stringify(conversationHistory));
             
             currentAbortController = new AbortController();
@@ -2803,6 +2983,11 @@
                     const blob = new Blob([bytes], { type: mimeType });
                     const audioUrl = URL.createObjectURL(blob);
                     
+                    // Store for download and show in sidebar player
+                    lastAudioBlob = blob;
+                    audioPlayerContainer.classList.remove('hidden');
+                    aiAudioPlayer.src = audioUrl;
+                    
                     // Use the existing audio player
                     const audio = new Audio(audioUrl);
                     
@@ -2819,7 +3004,7 @@
                             startBrowserTranscription();
                         }
                         console.log('[Groklexa] Server audio complete - resuming VAD & transcription');
-                        URL.revokeObjectURL(audioUrl);
+                        // Don't revoke URL - keep it for the sidebar player
                         resolve();
                     };
                     
@@ -2913,6 +3098,147 @@
                 stopVAD();
                 hideStatus();
             }
+        });
+        
+        // ========== PERSONA MANAGEMENT ==========
+        
+        const personaSelect = document.getElementById('personaSelect');
+        const personaPrompt = document.getElementById('personaPrompt');
+        const personaEditBtn = document.getElementById('personaEditBtn');
+        const personaAddBtn = document.getElementById('personaAddBtn');
+        const savePromptBtn = document.getElementById('savePromptBtn');
+        
+        let currentPersonaId = 'default';
+        
+        // Helper function to show config status messages
+        function showConfigStatus(message, type = 'success') {
+            const configStatus = document.getElementById('configStatus');
+            if (!configStatus) return;
+            
+            configStatus.style.display = 'block';
+            configStatus.className = `config-status ${type}`;
+            configStatus.textContent = message;
+            
+            setTimeout(() => {
+                configStatus.style.display = 'none';
+            }, 3000);
+        }
+        
+        async function loadPersonas() {
+            try {
+                const response = await fetch('/api/personas');
+                const data = await response.json();
+                
+                if (data.success && data.personas) {
+                    personaSelect.innerHTML = data.personas
+                        .map(p => `<option value="${p.id}" ${p.active ? 'selected' : ''}>${p.name}</option>`)
+                        .join('');
+                    
+                    currentPersonaId = data.active_persona || 'default';
+                    console.log('[Groklexa] Loaded personas:', data.personas.length);
+                }
+            } catch (e) {
+                console.error('[Groklexa] Failed to load personas:', e);
+            }
+        }
+        
+        async function switchPersona(personaId) {
+            try {
+                const response = await fetch('/api/personas/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ persona_id: personaId })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    currentPersonaId = personaId;
+                    console.log('[Groklexa] Switched to persona:', data.active?.name);
+                    
+                    // Reload full config to update all UI elements
+                    await loadApiConfig();
+                    
+                    // Update localStorage key for chat history
+                    loadHistory();
+                    
+                    showConfigStatus('Persona switched!', 'success');
+                } else {
+                    showConfigStatus(data.error || 'Failed to switch persona', 'error');
+                }
+            } catch (e) {
+                console.error('[Groklexa] Failed to switch persona:', e);
+                showConfigStatus('Failed to switch persona', 'error');
+            }
+        }
+        
+        async function savePersonaPrompt() {
+            try {
+                const prompt = personaPrompt.value;
+                
+                const response = await fetch(`/api/personas/${currentPersonaId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showConfigStatus('Prompt saved!', 'success');
+                } else {
+                    showConfigStatus(data.error || 'Failed to save prompt', 'error');
+                }
+            } catch (e) {
+                console.error('[Groklexa] Failed to save prompt:', e);
+                showConfigStatus('Failed to save prompt', 'error');
+            }
+        }
+        
+        async function createNewPersona() {
+            const name = prompt('Enter name for new persona:');
+            if (!name) return;
+            
+            try {
+                const response = await fetch('/api/personas', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        persona: {
+                            name: name,
+                            prompt: `You are ${name}, an AI assistant.`
+                        }
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Reload personas and switch to the new one
+                    await loadPersonas();
+                    await switchPersona(data.persona_id);
+                    showConfigStatus(`Created persona: ${name}`, 'success');
+                } else {
+                    showConfigStatus(data.error || 'Failed to create persona', 'error');
+                }
+            } catch (e) {
+                console.error('[Groklexa] Failed to create persona:', e);
+                showConfigStatus('Failed to create persona', 'error');
+            }
+        }
+        
+        // Persona event listeners
+        personaSelect.addEventListener('change', (e) => {
+            switchPersona(e.target.value);
+        });
+        
+        savePromptBtn.addEventListener('click', savePersonaPrompt);
+        personaAddBtn.addEventListener('click', createNewPersona);
+        
+        personaEditBtn.addEventListener('click', () => {
+            // Toggle prompt details open
+            const details = document.querySelector('.prompt-details');
+            details.open = !details.open;
         });
         
         // ========== API CONFIGURATION ==========
@@ -3282,7 +3608,21 @@
                 const data = await response.json();
                 
                 if (data.success && data.config) {
-                    const config = data.config;
+                    const fullConfig = data.config;
+                    
+                    // Use the active persona's flattened config
+                    const config = fullConfig.active || fullConfig;
+                    
+                    // Update persona UI
+                    if (fullConfig.active_persona) {
+                        currentPersonaId = fullConfig.active_persona;
+                        personaSelect.value = currentPersonaId;
+                    }
+                    
+                    // Load persona's custom prompt
+                    if (config.prompt) {
+                        personaPrompt.value = config.prompt;
+                    }
                     
                     // Set mode
                     if (config.mode === 'separate') {
@@ -3468,8 +3808,12 @@
             }, 3000);
         }
         
-        // Load config on page load
-        loadApiConfig();
+        // Load personas and config on page load
+        async function initializeApp() {
+            await loadPersonas();
+            await loadApiConfig();
+        }
+        initializeApp();
     </script>
 </body>
 </html>
