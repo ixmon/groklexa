@@ -95,6 +95,23 @@ Open the settings panel (gear icon) to configure:
 
 Configuration is saved to `config/api_settings.json` (gitignored).
 
+## Local Models (Ollama)
+
+For fully local inference, Groklexa supports [Ollama](https://ollama.ai). Install Ollama, then pull a model:
+
+```bash
+# Recommended: dolphin-llama3:8b - uncensored, great conversational quality
+ollama pull dolphin-llama3:8b
+
+# Alternatives
+ollama pull mistral:7b        # Fast, good quality
+ollama pull llama3.2:3b       # Smallest, fastest (limited capabilities)
+```
+
+**Recommended model: `dolphin-llama3:8b`** - Best balance of speed, quality, and conversational ability for local inference. Requires ~6GB VRAM.
+
+> **Note:** Tool calling (search, datetime) is disabled for Ollama models as most local models don't handle function calling reliably. The model will respond conversationally without external tool access.
+
 ## Project Structure
 
 ```
