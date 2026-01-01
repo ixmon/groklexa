@@ -47,14 +47,16 @@ def strip_emojis_for_tts(text: str) -> str:
         "\U0001F1E0-\U0001F1FF"  # Flags
         "\U00002600-\U000026FF"  # Misc symbols (☀️, ⭐, etc.)
         "\U00002300-\U000023FF"  # Misc technical (⌛, ⏰, etc.)
+        "\U0000FE00-\U0000FE0F"  # Variation selectors
+        "\U0000200D"             # Zero-width joiner (used in compound emojis)
         "]+",
         flags=re.UNICODE
     )
     
-    # Remove emojis
+    # Remove emojis and variation selectors
     text = emoji_pattern.sub('', text)
     
-    # Clean up any resulting double spaces
+    # Clean up any resulting double spaces or trailing punctuation issues
     text = re.sub(r'\s+', ' ', text).strip()
     
     return text
@@ -1235,14 +1237,14 @@ Your responses will be spoken aloud. For best results:
     
     guidance = tts_guidance.get(synthesis_provider, default_guidance)
     
-    # Tool usage guidance - critical for preventing over-eager tool calls
+    # Tool usage guidance
     tool_guidance = """
 
-IMPORTANT - Tool Usage Rules:
-- ONLY use search_web or search_x when the user EXPLICITLY asks you to search (e.g., "search for", "look up", "Google this", "check Twitter")
-- ONLY use escalate_thinking when the user EXPLICITLY asks you to "think deeply", "research thoroughly", or "analyze this"
-- For casual conversation, opinions, personal questions about you, or things you already know - just respond directly WITHOUT calling any tools
-- When in doubt, respond conversationally rather than searching"""
+Tool Usage:
+- Use tools like get_current_datetime, set_timer, get_current_weather, get_system_info when relevant to the user's request
+- Only use search_web/search_x when the user explicitly asks to search
+- Only use escalate_thinking when asked to think deeply or research
+- For opinions or casual chat, just respond normally"""
     
     return f"{base_prompt}\n{guidance}\n{tool_guidance}"
 
@@ -1261,7 +1263,7 @@ def infer_text():
         if not text:
             return jsonify({'error': 'No text provided'}), 400
         
-        logger.info(f"Text inference request: {text[:100]}...")
+        logger.info(f"Text inference request: {text[:100]}... (history: {len(conversation_history)} messages)")
         
         # Load active persona configuration
         config = load_config()
@@ -1368,7 +1370,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "get_current_datetime",
-                "description": "Get current date/time. ONLY use when user EXPLICITLY asks 'what time is it', 'what's today's date', or 'what day is it'. Do NOT use for general conversation.",
+                "description": "Get the current date and time. Use this when the user asks about time, date, or needs to know the current moment.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1419,7 +1421,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "get_current_weather",
-                "description": "Get weather for a location. ONLY use when user EXPLICITLY asks about weather, like 'what's the weather', 'is it raining', 'temperature outside'. Do NOT use for casual conversation.",
+                "description": "Get current weather for a location. Use when the user asks about weather, temperature, or conditions in a city.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1436,7 +1438,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "set_timer",
-                "description": "Set a timer. ONLY use when user EXPLICITLY says 'set a timer', 'remind me in X minutes', or 'alert me in'. Do NOT use unless user requests a specific duration.",
+                "description": "Set a timer or reminder for a specified duration. Use when the user wants to be reminded or alerted after some time.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1461,7 +1463,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "list_timers",
-                "description": "List active timers. ONLY use when user EXPLICITLY asks 'what timers are set', 'any active reminders', or 'how much time left'. Do NOT use for general conversation.",
+                "description": "List all active timers and reminders with remaining time.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -1473,7 +1475,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "set_reminder",
-                "description": "Set a reminder. ONLY use when user EXPLICITLY says 'remind me' or 'set a reminder'. Same as set_timer. Do NOT use for general conversation.",
+                "description": "Set a reminder. Same as set_timer but for reminder-style requests.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1498,7 +1500,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "cancel_timer",
-                "description": "Cancel a timer/reminder. ONLY use when user EXPLICITLY says 'cancel timer', 'stop reminder', or 'delete alarm'. Do NOT use for general conversation.",
+                "description": "Cancel an active timer or reminder.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1515,7 +1517,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "get_system_info",
-                "description": "Get server/system info. ONLY use when user EXPLICITLY asks about 'system status', 'server health', 'CPU usage', 'GPU temp', or 'disk space'. Do NOT use for general questions.",
+                "description": "Get server/system information including CPU, memory, disk, GPU usage, and uptime.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1572,6 +1574,14 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
         payload['tools'] = tools
         payload['tool_choice'] = 'auto'
     
+    # Log the full prompt being sent (for debugging tool call issues)
+    logger.info(f"=== FULL PROMPT TO MODEL ===")
+    for i, msg in enumerate(payload['messages']):
+        role = msg.get('role', 'unknown')
+        content = msg.get('content', '')[:500]  # Truncate for readability
+        logger.info(f"  [{i}] {role}: {content}...")
+    logger.info(f"=== END PROMPT ({len(payload['messages'])} messages, tools={'yes' if tools else 'no'}) ===")
+    
     # Tool loop - keep calling until we get a final response
     max_tool_iterations = 5
     for iteration in range(max_tool_iterations):
@@ -1596,6 +1606,9 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
         data = response.json()
         choice = data['choices'][0]
         message = choice['message']
+        
+        # Debug: log the raw message from the model
+        logger.debug(f"Model response message: {json.dumps(message)[:500]}")
         
         # Check if there are tool calls
         tool_calls = message.get('tool_calls', [])
