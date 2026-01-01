@@ -1561,6 +1561,14 @@ def try_parse_json_tool_call(content: str, auth: str) -> str:
     # Clean up content - remove trailing garbage after JSON
     content = content.strip()
     
+    # Fix common JSON malformations
+    # "parameters":} -> "parameters":{}}
+    content = re.sub(r'"parameters"\s*:\s*\}', '"parameters":{}}', content)
+    # "parameters": } -> "parameters":{}}
+    content = re.sub(r'"parameters"\s*:\s*\}', '"parameters":{}}', content)
+    # Remove trailing quotes/garbage
+    content = re.sub(r'\}["\s]+$', '}', content)
+    
     # Try to extract just the JSON object (handle trailing quotes/garbage)
     json_match = re.search(r'(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})', content)
     if json_match:
@@ -1602,6 +1610,14 @@ def try_parse_json_tool_call(content: str, auth: str) -> str:
             except json.JSONDecodeError as e:
                 logger.debug(f"Failed to parse JSON tool params: {e}")
                 continue
+    
+    # Last resort: just extract the tool name and call with empty args
+    name_match = re.search(r'["\']?name["\']?\s*:\s*["\'](\w+)["\']', content, re.IGNORECASE)
+    if name_match:
+        function_name = name_match.group(1)
+        logger.info(f"Extracted tool name only (no params): {function_name}")
+        result = execute_tool(function_name, {}, auth)
+        return result
     
     return None
 
