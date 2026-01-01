@@ -1336,7 +1336,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "get_current_datetime",
-                "description": "Get the current date and time. Use this when the user asks about today's date, current time, or any time-sensitive information.",
+                "description": "Get current date/time. ONLY use when user EXPLICITLY asks 'what time is it', 'what's today's date', or 'what day is it'. Do NOT use for general conversation.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1387,7 +1387,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "get_current_weather",
-                "description": "Get the current weather and forecast for a location. Use this when the user asks about weather, temperature, rain, snow, or outdoor conditions.",
+                "description": "Get weather for a location. ONLY use when user EXPLICITLY asks about weather, like 'what's the weather', 'is it raining', 'temperature outside'. Do NOT use for casual conversation.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1404,7 +1404,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "set_timer",
-                "description": "Set a timer or reminder. Use this when the user asks to be reminded in X minutes/seconds, set a timer, or wants an alert after a duration.",
+                "description": "Set a timer. ONLY use when user EXPLICITLY says 'set a timer', 'remind me in X minutes', or 'alert me in'. Do NOT use unless user requests a specific duration.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1429,7 +1429,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "list_timers",
-                "description": "List all active timers and reminders. Use this when the user asks what timers are set, how much time is left, or wants to check their reminders.",
+                "description": "List active timers. ONLY use when user EXPLICITLY asks 'what timers are set', 'any active reminders', or 'how much time left'. Do NOT use for general conversation.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -1441,7 +1441,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "set_reminder",
-                "description": "Set a reminder. Use this when the user asks to be reminded about something in X minutes. Same as set_timer but for reminder-style requests.",
+                "description": "Set a reminder. ONLY use when user EXPLICITLY says 'remind me' or 'set a reminder'. Same as set_timer. Do NOT use for general conversation.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1466,7 +1466,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "cancel_timer",
-                "description": "Cancel an active timer or reminder. Use this when the user wants to cancel, stop, delete, or remove a timer or reminder.",
+                "description": "Cancel a timer/reminder. ONLY use when user EXPLICITLY says 'cancel timer', 'stop reminder', or 'delete alarm'. Do NOT use for general conversation.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1483,7 +1483,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "get_system_info",
-                "description": "Get information about the server/computer including CPU usage, memory usage, disk space, GPU utilization, and system uptime. Use this when the user asks about system status, server health, resource usage, or hardware information.",
+                "description": "Get server/system info. ONLY use when user EXPLICITLY asks about 'system status', 'server health', 'CPU usage', 'GPU temp', or 'disk space'. Do NOT use for general questions.",
                 "parameters": {
                     "type": "object",
                     "properties": {
