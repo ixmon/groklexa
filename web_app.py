@@ -2987,6 +2987,10 @@ def get_chatterbox_model():
         _chatterbox_model_loading = False
 
 
+# Lock to serialize Chatterbox synthesis (GPU can't handle parallel generations well)
+_chatterbox_synthesis_lock = threading.Lock()
+
+
 def synthesize_with_chatterbox(text: str, voice_ref: str) -> bytes:
     """Synthesize speech using Chatterbox TTS with voice cloning."""
     import io
@@ -2997,46 +3001,50 @@ def synthesize_with_chatterbox(text: str, voice_ref: str) -> bytes:
     t0 = time.time()
     logger.debug(f"Chatterbox synthesis: voice_ref={voice_ref}, text={text[:50]}...")
     
-    try:
-        t1 = time.time()
-        model = get_chatterbox_model()
-        t2 = time.time()
+    # Serialize synthesis requests - GPU struggles with parallel generation
+    with _chatterbox_synthesis_lock:
+        logger.debug("Chatterbox synthesis lock acquired")
         
-        if model is None:
-            logger.error("Chatterbox model not available")
+        try:
+            t1 = time.time()
+            model = get_chatterbox_model()
+            t2 = time.time()
+            
+            if model is None:
+                logger.error("Chatterbox model not available")
+                return None
+            
+            logger.debug(f"Chatterbox model fetch: {(t2-t1)*1000:.0f}ms")
+            
+            # Build path to voice reference
+            voice_path = os.path.join('static', 'voices', voice_ref)
+            if not os.path.exists(voice_path):
+                logger.error(f"Voice reference not found: {voice_path}")
+                return None
+            
+            logger.info(f"Generating speech with Chatterbox (voice: {voice_ref})")
+            
+            # Generate audio
+            t3 = time.time()
+            wav = model.generate(text, audio_prompt_path=voice_path)
+            t4 = time.time()
+            logger.info(f"Chatterbox generation: {(t4-t3)*1000:.0f}ms")
+            
+            # Convert tensor to numpy and save as WAV using scipy
+            audio_np = wav.squeeze().cpu().numpy()
+            # Normalize to int16 range for WAV
+            audio_int16 = (audio_np * 32767).astype(np.int16)
+            
+            audio_buffer = io.BytesIO()
+            wavfile.write(audio_buffer, model.sr, audio_int16)
+            audio_buffer.seek(0)
+            
+            logger.info(f"Chatterbox generated {len(audio_buffer.getvalue())} bytes")
+            return audio_buffer.getvalue()
+            
+        except Exception as e:
+            logger.error(f"Chatterbox synthesis error: {e}", exc_info=True)
             return None
-        
-        logger.debug(f"Chatterbox model fetch: {(t2-t1)*1000:.0f}ms")
-        
-        # Build path to voice reference
-        voice_path = os.path.join('static', 'voices', voice_ref)
-        if not os.path.exists(voice_path):
-            logger.error(f"Voice reference not found: {voice_path}")
-            return None
-        
-        logger.info(f"Generating speech with Chatterbox (voice: {voice_ref})")
-        
-        # Generate audio
-        t3 = time.time()
-        wav = model.generate(text, audio_prompt_path=voice_path)
-        t4 = time.time()
-        logger.info(f"Chatterbox generation: {(t4-t3)*1000:.0f}ms")
-        
-        # Convert tensor to numpy and save as WAV using scipy
-        audio_np = wav.squeeze().cpu().numpy()
-        # Normalize to int16 range for WAV
-        audio_int16 = (audio_np * 32767).astype(np.int16)
-        
-        audio_buffer = io.BytesIO()
-        wavfile.write(audio_buffer, model.sr, audio_int16)
-        audio_buffer.seek(0)
-        
-        logger.info(f"Chatterbox generated {len(audio_buffer.getvalue())} bytes")
-        return audio_buffer.getvalue()
-        
-    except Exception as e:
-        logger.error(f"Chatterbox synthesis error: {e}", exc_info=True)
-        return None
 
 
 @app.route('/api/voices/chatterbox', methods=['GET'])
