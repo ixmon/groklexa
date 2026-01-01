@@ -1536,10 +1536,29 @@ def try_parse_json_tool_call(content: str, auth: str) -> str:
     if not content:
         return None
     
-    # Look for JSON-like patterns
+    # Clean up content - remove trailing garbage after JSON
+    content = content.strip()
+    
+    # Try to extract just the JSON object (handle trailing quotes/garbage)
+    json_match = re.search(r'(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})', content)
+    if json_match:
+        json_str = json_match.group(1)
+        try:
+            data = json.loads(json_str)
+            if isinstance(data, dict) and 'name' in data:
+                function_name = data['name']
+                args = data.get('parameters', data.get('arguments', {}))
+                
+                logger.info(f"Parsed JSON tool call: {function_name}({args})")
+                result = execute_tool(function_name, args, auth)
+                return result
+        except json.JSONDecodeError as e:
+            logger.debug(f"JSON parse failed: {e}, trying regex patterns")
+    
+    # Look for JSON-like patterns with regex
     json_patterns = [
-        r'\{["\']?name["\']?\s*:\s*["\'](\w+)["\'].*?["\']?parameters["\']?\s*:\s*(\{.*?\})\}',
-        r'\{["\']?function["\']?\s*:\s*["\'](\w+)["\'].*?["\']?arguments["\']?\s*:\s*(\{.*?\})\}',
+        r'["\']?name["\']?\s*:\s*["\'](\w+)["\'].*?["\']?parameters["\']?\s*:\s*(\{[^{}]*\})',
+        r'["\']?function["\']?\s*:\s*["\'](\w+)["\'].*?["\']?arguments["\']?\s*:\s*(\{[^{}]*\})',
     ]
     
     for pattern in json_patterns:
@@ -1553,7 +1572,7 @@ def try_parse_json_tool_call(content: str, auth: str) -> str:
                 params_str = params_str.replace("'", '"')
                 args = json.loads(params_str)
                 
-                logger.info(f"Parsed JSON tool call from content: {function_name}({args})")
+                logger.info(f"Parsed JSON tool call from regex: {function_name}({args})")
                 
                 # Execute the tool
                 result = execute_tool(function_name, args, auth)
@@ -1561,19 +1580,6 @@ def try_parse_json_tool_call(content: str, auth: str) -> str:
             except json.JSONDecodeError as e:
                 logger.debug(f"Failed to parse JSON tool params: {e}")
                 continue
-    
-    # Also try parsing the whole content as JSON
-    try:
-        data = json.loads(content.strip())
-        if isinstance(data, dict) and 'name' in data:
-            function_name = data['name']
-            args = data.get('parameters', data.get('arguments', {}))
-            
-            logger.info(f"Parsed full JSON tool call: {function_name}({args})")
-            result = execute_tool(function_name, args, auth)
-            return result
-    except json.JSONDecodeError:
-        pass
     
     return None
 
