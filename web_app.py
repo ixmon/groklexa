@@ -1289,9 +1289,13 @@ def infer_text():
         
         logger.info(f"Inference response: {response_text[:100]}...")
         
+        # Get tool calls that were made during this inference
+        tools_called = list(_current_inference_tools) if _current_inference_tools else []
+        
         return jsonify({
             'success': True,
-            'response': response_text
+            'response': response_text,
+            'tools_called': tools_called
         })
         
     except Exception as e:
@@ -1302,8 +1306,14 @@ def infer_text():
         }), 500
 
 
+# Track tool calls for the current inference (for UI display)
+_current_inference_tools = []
+
 def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool_permissions: dict = None) -> str:
     """Call an OpenAI-compatible API (Grok, OpenAI, Ollama, etc.) with tool support."""
+    global _current_inference_tools
+    _current_inference_tools = []  # Reset for this inference
+    
     logger.debug(f"Calling OpenAI-compatible API: {url}, model: {model}")
     
     headers = {
@@ -1557,7 +1567,9 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
                 return parsed_result
             return content
         
-        logger.info(f"Tool calls requested (iteration {iteration + 1}): {[tc['function']['name'] for tc in tool_calls]}")
+        tool_names = [tc['function']['name'] for tc in tool_calls]
+        logger.info(f"Tool calls requested (iteration {iteration + 1}): {tool_names}")
+        _current_inference_tools.extend(tool_names)
         
         # Add assistant message with tool calls to conversation
         payload['messages'].append(message)

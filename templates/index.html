@@ -2876,12 +2876,21 @@
                 }
                 
                 const aiResponse = data.response;
+                const toolsCalled = data.tools_called || [];
+                
                 console.log('[Groklexa] AI Response:', aiResponse.substring(0, 100) + '...');
+                if (toolsCalled.length > 0) {
+                    console.log('[Groklexa] Tools called:', toolsCalled);
+                    showStatus(`🔧 Tools: ${toolsCalled.join(', ')}`, 'info');
+                    // Brief pause to show the tools status
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                }
                 
                 // Show results
                 showResult({
                     transcription: transcription,
-                    ai_response_text: aiResponse
+                    ai_response_text: aiResponse,
+                    tools_called: toolsCalled
                 });
                 
                 // Step 3: Synthesis (browser or server based on config)
