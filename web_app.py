@@ -97,6 +97,7 @@ def get_default_persona():
             "set_reminder": True,
             "list_timers": True,
             "cancel_timer": True,
+            "get_system_info": True,
             "search_x": True,
             "search_web": True
         }
@@ -1440,6 +1441,24 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
                     "required": []
                 }
             }
+        },
+        "get_system_info": {
+            "type": "function",
+            "function": {
+                "name": "get_system_info",
+                "description": "Get information about the server/computer including CPU usage, memory usage, disk space, GPU utilization, and system uptime. Use this when the user asks about system status, server health, resource usage, or hardware information.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "detail_level": {
+                            "type": "string",
+                            "enum": ["basic", "detailed"],
+                            "description": "Level of detail: 'basic' for overview, 'detailed' to include top processes"
+                        }
+                    },
+                    "required": []
+                }
+            }
         }
     }
     
@@ -1629,6 +1648,16 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         'get_weather': 'get_current_weather',
         'weather': 'get_current_weather',
         'check_weather': 'get_current_weather',
+        # System info aliases
+        'system_info': 'get_system_info',
+        'system_status': 'get_system_info',
+        'server_status': 'get_system_info',
+        'server_info': 'get_system_info',
+        'get_server_status': 'get_system_info',
+        'get_server_info': 'get_system_info',
+        'check_system': 'get_system_info',
+        'hardware_info': 'get_system_info',
+        'resource_usage': 'get_system_info',
     }
     
     # Apply alias if exists
@@ -1671,6 +1700,8 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         return tool_list_timers()
     elif function_name == 'cancel_timer':
         return tool_cancel_timer(args.get('message') or args.get('timer') or args.get('which') or args.get('name'))
+    elif function_name == 'get_system_info':
+        return tool_get_system_info(args.get('detail_level', 'basic'))
     elif function_name == 'search_x':
         return tool_search_x(args.get('query', ''), auth)
     elif function_name == 'search_web':
@@ -1706,6 +1737,10 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         if 'weather' in function_lower:
             logger.info(f"Fuzzy matched '{function_name}' to get_current_weather")
             return tool_get_current_weather(args.get('location', ''))
+        
+        if 'system' in function_lower or 'server' in function_lower or 'hardware' in function_lower or 'resource' in function_lower:
+            logger.info(f"Fuzzy matched '{function_name}' to get_system_info")
+            return tool_get_system_info(args.get('detail_level', 'basic'))
         
         return f"Unknown tool: {function_name}"
 
@@ -1806,6 +1841,83 @@ def tool_get_current_weather(location: str) -> str:
     except Exception as e:
         logger.error(f"Weather tool error: {e}")
         return f"Error getting weather: {str(e)}"
+
+
+def tool_get_system_info(detail_level: str = 'basic') -> str:
+    """Get system information including CPU, memory, disk, and GPU usage."""
+    import psutil
+    import platform
+    import subprocess
+    
+    lines = []
+    
+    # Basic system info
+    lines.append(f"🖥️ System: {platform.system()} {platform.release()}")
+    lines.append(f"   Hostname: {platform.node()}")
+    
+    # CPU info
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    cpu_count = psutil.cpu_count()
+    cpu_freq = psutil.cpu_freq()
+    lines.append(f"🔲 CPU: {cpu_percent}% used ({cpu_count} cores)")
+    if cpu_freq:
+        lines.append(f"   Frequency: {cpu_freq.current:.0f} MHz")
+    
+    # Memory info
+    mem = psutil.virtual_memory()
+    mem_used_gb = mem.used / (1024**3)
+    mem_total_gb = mem.total / (1024**3)
+    lines.append(f"🧠 Memory: {mem.percent}% used ({mem_used_gb:.1f}GB / {mem_total_gb:.1f}GB)")
+    
+    # Disk info
+    disk = psutil.disk_usage('/')
+    disk_used_gb = disk.used / (1024**3)
+    disk_total_gb = disk.total / (1024**3)
+    lines.append(f"💾 Disk (/): {disk.percent}% used ({disk_used_gb:.0f}GB / {disk_total_gb:.0f}GB)")
+    
+    # GPU info (try nvidia-smi)
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            for i, line in enumerate(result.stdout.strip().split('\n')):
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 5:
+                    name, mem_used, mem_total, util, temp = parts[:5]
+                    lines.append(f"🎮 GPU {i}: {name}")
+                    lines.append(f"   Utilization: {util}%, Memory: {mem_used}MB / {mem_total}MB, Temp: {temp}°C")
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+        logger.debug(f"nvidia-smi not available: {e}")
+    
+    # Top processes by CPU (if detailed)
+    if detail_level == 'detailed':
+        lines.append("\n📊 Top Processes by CPU:")
+        procs = []
+        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
+            try:
+                pinfo = proc.info
+                procs.append(pinfo)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        
+        # Sort by CPU and take top 5
+        procs.sort(key=lambda x: x.get('cpu_percent', 0) or 0, reverse=True)
+        for p in procs[:5]:
+            lines.append(f"   - {p['name']}: CPU {p.get('cpu_percent', 0):.1f}%, Mem {p.get('memory_percent', 0):.1f}%")
+    
+    # Uptime
+    boot_time = psutil.boot_time()
+    import time
+    uptime_seconds = time.time() - boot_time
+    uptime_days = int(uptime_seconds // 86400)
+    uptime_hours = int((uptime_seconds % 86400) // 3600)
+    uptime_mins = int((uptime_seconds % 3600) // 60)
+    lines.append(f"⏱️ Uptime: {uptime_days}d {uptime_hours}h {uptime_mins}m")
+    
+    return "\n".join(lines)
 
 
 def parse_duration_string(duration_str: str) -> float:

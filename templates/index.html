@@ -1318,6 +1318,13 @@
                         </span>
                     </label>
                     <label class="tool-toggle">
+                        <input type="checkbox" id="toolSystemInfo" checked>
+                        <span class="tool-info">
+                            <span class="tool-name">🖥️ System Info</span>
+                            <span class="tool-desc">CPU, memory, disk, GPU usage (local)</span>
+                        </span>
+                    </label>
+                    <label class="tool-toggle">
                         <input type="checkbox" id="toolSearchX" checked>
                         <span class="tool-info">
                             <span class="tool-name">🐦 Search X</span>
@@ -3209,6 +3216,7 @@
         const toolDateTime = document.getElementById('toolDateTime');
         const toolWeather = document.getElementById('toolWeather');
         const toolTimer = document.getElementById('toolTimer');
+        const toolSystemInfo = document.getElementById('toolSystemInfo');
         const toolSearchX = document.getElementById('toolSearchX');
         const toolSearchWeb = document.getElementById('toolSearchWeb');
         
@@ -3349,6 +3357,7 @@
                     set_reminder: toolTimer.checked,   // Same toggle as set_timer
                     list_timers: toolTimer.checked,    // Same toggle as set_timer
                     cancel_timer: toolTimer.checked,   // Same toggle as set_timer
+                    get_system_info: toolSystemInfo.checked,
                     search_x: toolSearchX.checked,
                     search_web: toolSearchWeb.checked
                 };
@@ -3769,6 +3778,7 @@
                         toolDateTime.checked = config.tools.get_current_datetime !== false;
                         toolWeather.checked = config.tools.get_current_weather !== false;
                         toolTimer.checked = config.tools.set_timer !== false;
+                        toolSystemInfo.checked = config.tools.get_system_info !== false;
                         toolSearchX.checked = config.tools.search_x !== false;
                         toolSearchWeb.checked = config.tools.search_web !== false;
                         console.log('[Groklexa] Loaded tool permissions:', config.tools);
