@@ -4096,12 +4096,18 @@
         }
         
         async function announceThought(thought) {
+            // Wait for any active synthesis to complete
+            while (isAISpeaking || isProcessing) {
+                console.log('[Groklexa] Waiting for synthesis to complete before announcing thought...');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            
             // Create a summary for voice announcement
             const summary = thought.response.substring(0, 500);
             const announcementText = `I've finished thinking deeply about ${thought.query.substring(0, 50)}. Here's what I found: ${summary}`;
             
             console.log('[Groklexa] Announcing thought:', thought.id);
-            updateStatus('Deep thinking complete!');
+            showStatus('🧠 Deep thinking complete!', 'success');
             
             // Add to chat history
             addToHistory('assistant', `[Deep Analysis of "${thought.query}"]\n\n${thought.response}`);
