@@ -11,6 +11,7 @@ import logging
 import time
 import threading
 import uuid
+import re
 import requests
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory
@@ -26,6 +27,37 @@ logger = logging.getLogger('groklexa')
 
 app = Flask(__name__, static_folder='static')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+
+def strip_emojis_for_tts(text: str) -> str:
+    """Remove emojis and special characters that TTS can't handle properly."""
+    # Comprehensive emoji pattern covering most Unicode emoji ranges
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F700-\U0001F77F"  # alchemical symbols
+        "\U0001F780-\U0001F7FF"  # Geometric Shapes Extended
+        "\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
+        "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+        "\U0001FA00-\U0001FA6F"  # Chess Symbols
+        "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
+        "\U00002702-\U000027B0"  # Dingbats
+        "\U0001F1E0-\U0001F1FF"  # Flags
+        "\U00002600-\U000026FF"  # Misc symbols (☀️, ⭐, etc.)
+        "\U00002300-\U000023FF"  # Misc technical (⌛, ⏰, etc.)
+        "]+",
+        flags=re.UNICODE
+    )
+    
+    # Remove emojis
+    text = emoji_pattern.sub('', text)
+    
+    # Clean up any resulting double spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
 
 
 @app.route('/static/openwakeword/<path:filename>')
@@ -2817,6 +2849,9 @@ def synthesize():
         text = data.get('text', '')
         if not text:
             return jsonify({'error': 'No text provided'}), 400
+        
+        # Strip emojis and special characters before TTS
+        text = strip_emojis_for_tts(text)
         
         logger.info(f"Synthesis request: {text[:100]}...")
         
