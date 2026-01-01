@@ -699,6 +699,59 @@
             box-shadow: 0 0 0 3px rgba(156, 139, 122, 0.2);
         }
         
+        .tools-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        
+        .tool-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.5);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .tool-toggle:hover {
+            background: rgba(255, 255, 255, 0.8);
+        }
+        
+        .tool-toggle input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--warm-brown);
+        }
+        
+        .tool-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        
+        .tool-name {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-dark);
+        }
+        
+        .tool-desc {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+        
+        [data-theme="night"] .tool-toggle {
+            background: rgba(20, 20, 30, 0.6);
+        }
+        
+        [data-theme="night"] .tool-toggle:hover {
+            background: rgba(30, 30, 45, 0.8);
+        }
+        
         .btn-save-prompt {
             margin-top: 8px;
             padding: 8px 16px;
@@ -1237,6 +1290,35 @@
                 <summary>System Prompt</summary>
                 <textarea id="personaPrompt" rows="4" placeholder="Enter the system prompt for this persona..."></textarea>
                 <button class="btn-save-prompt" id="savePromptBtn">Save Prompt</button>
+            </details>
+            
+            <!-- Tool Permissions (collapsible) -->
+            <details class="prompt-details tools-details">
+                <summary>Tool Permissions</summary>
+                <div class="tools-list">
+                    <label class="tool-toggle">
+                        <input type="checkbox" id="toolDateTime" checked>
+                        <span class="tool-info">
+                            <span class="tool-name">📅 Date & Time</span>
+                            <span class="tool-desc">Get current date/time (local)</span>
+                        </span>
+                    </label>
+                    <label class="tool-toggle">
+                        <input type="checkbox" id="toolSearchX" checked>
+                        <span class="tool-info">
+                            <span class="tool-name">🐦 Search X</span>
+                            <span class="tool-desc">Search posts on X (requires xAI API)</span>
+                        </span>
+                    </label>
+                    <label class="tool-toggle">
+                        <input type="checkbox" id="toolSearchWeb" checked>
+                        <span class="tool-info">
+                            <span class="tool-name">🌐 Search Web</span>
+                            <span class="tool-desc">Web search (requires xAI API)</span>
+                        </span>
+                    </label>
+                </div>
+                <button class="btn-save-prompt" id="saveToolsBtn">Save Tools</button>
             </details>
         </div>
         
@@ -3107,6 +3189,12 @@
         const personaEditBtn = document.getElementById('personaEditBtn');
         const personaAddBtn = document.getElementById('personaAddBtn');
         const savePromptBtn = document.getElementById('savePromptBtn');
+        const saveToolsBtn = document.getElementById('saveToolsBtn');
+        
+        // Tool permission checkboxes
+        const toolDateTime = document.getElementById('toolDateTime');
+        const toolSearchX = document.getElementById('toolSearchX');
+        const toolSearchWeb = document.getElementById('toolSearchWeb');
         
         let currentPersonaId = 'default';
         
@@ -3234,6 +3322,37 @@
         
         savePromptBtn.addEventListener('click', savePersonaPrompt);
         personaAddBtn.addEventListener('click', createNewPersona);
+        
+        // Save tool permissions
+        async function saveToolPermissions() {
+            try {
+                const tools = {
+                    get_current_datetime: toolDateTime.checked,
+                    search_x: toolSearchX.checked,
+                    search_web: toolSearchWeb.checked
+                };
+                
+                const response = await fetch(`/api/personas/${currentPersonaId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tools })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showConfigStatus('Tool permissions saved!', 'success');
+                    console.log('[Groklexa] Tool permissions saved:', tools);
+                } else {
+                    showConfigStatus(data.error || 'Failed to save tools', 'error');
+                }
+            } catch (e) {
+                console.error('[Groklexa] Failed to save tools:', e);
+                showConfigStatus('Failed to save tool permissions', 'error');
+            }
+        }
+        
+        saveToolsBtn.addEventListener('click', saveToolPermissions);
         
         personaEditBtn.addEventListener('click', () => {
             // Toggle prompt details open
@@ -3622,6 +3741,14 @@
                     // Load persona's custom prompt
                     if (config.prompt) {
                         personaPrompt.value = config.prompt;
+                    }
+                    
+                    // Load persona's tool permissions
+                    if (config.tools) {
+                        toolDateTime.checked = config.tools.get_current_datetime !== false;
+                        toolSearchX.checked = config.tools.search_x !== false;
+                        toolSearchWeb.checked = config.tools.search_web !== false;
+                        console.log('[Groklexa] Loaded tool permissions:', config.tools);
                     }
                     
                     // Set mode

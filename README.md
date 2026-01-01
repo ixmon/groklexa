@@ -12,6 +12,8 @@ Groklexa is a fully in-browser voice assistant that wakes up when you say its cu
 * 🎬 **Animated visual feedback** - A serene woman in headphones "wakes up" (head turn + subtle smile) when listening, drifts back to sleep when off
 * 📋 **Threaded conversation history** with copy, download, and manual clear
 * ⚙️ **All processing configurable** - Transcription, inference, and synthesis can all be configured to be remote cloud or local
+* 🎭 **Personas** - Create multiple AI personalities with custom prompts, voices, and tool permissions
+* 🔧 **Tool calling** - DateTime, X search, and web search with per-persona permissions
 * 🔒 **100% client-side wake word and VAD** → no audio leaves your device until you speak after activation
 * 🌙 **Day/Night modes** - Elegant UI with theme switching
 
@@ -95,22 +97,46 @@ Open the settings panel (gear icon) to configure:
 
 Configuration is saved to `config/api_settings.json` (gitignored).
 
+## Personas
+
+Personas let you create multiple AI personalities, each with their own:
+
+- **Custom system prompt** - Define personality, behavior, and constraints
+- **Voice settings** - Different TTS voice per persona (Chatterbox voice cloning, Edge TTS, or browser)
+- **Tool permissions** - Enable/disable DateTime, X search, and web search per persona
+- **Separate chat history** - Each persona maintains its own conversation
+
+**Example personas:**
+- *Groklexa* - Friendly assistant with full cloud capabilities (xAI search tools)
+- *Local Assistant* - Privacy-focused, runs entirely on local Ollama + Whisper
+- *Venom* - Character voice using Chatterbox voice cloning
+
+Create personas from the settings panel - each gets its own configuration and chat log.
+
 ## Local Models (Ollama)
 
 For fully local inference, Groklexa supports [Ollama](https://ollama.ai). Install Ollama, then pull a model:
 
 ```bash
-# Recommended: dolphin-llama3:8b - uncensored, great conversational quality
-ollama pull dolphin-llama3:8b
+# Recommended for tool calling support:
+ollama pull llama3.2:3b       # Fast, supports tools (datetime, etc.)
+ollama pull mistral:7b        # Good quality, supports tools
 
-# Alternatives
-ollama pull mistral:7b        # Fast, good quality
-ollama pull llama3.2:3b       # Smallest, fastest (limited capabilities)
+# For best conversational quality (no tool support):
+ollama pull dolphin-llama3:8b # Uncensored, great for roleplay/characters
 ```
 
-**Recommended model: `dolphin-llama3:8b`** - Best balance of speed, quality, and conversational ability for local inference. Requires ~6GB VRAM.
+### Model Comparison
 
-> **Note:** Tool calling (search, datetime) is disabled for Ollama models as most local models don't handle function calling reliably. The model will respond conversationally without external tool access.
+| Model | Size | Tool Calling | Best For |
+|-------|------|--------------|----------|
+| `llama3.2:3b` | ~2GB | ✅ Yes | Fast responses with tool support |
+| `mistral:7b` | ~4GB | ✅ Yes | Balanced quality + tools |
+| `dolphin-llama3:8b` | ~5GB | ❌ No | Best conversation quality, characters |
+
+**Recommended: `llama3.2:3b`** for tool calling support, or `dolphin-llama3:8b` for pure conversation quality.
+
+> **Note:** Tool support is model-dependent. If a model doesn't support tools, Groklexa automatically falls back to conversation-only mode.
 
 ## Project Structure
 

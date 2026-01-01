@@ -442,14 +442,14 @@ def update_persona(persona_id):
         for key in data:
             if key.startswith('_'):
                 continue  # Skip internal fields
-            if key in existing:
-                if isinstance(existing[key], dict) and isinstance(data[key], dict):
-                    # Handle auth masking
-                    if 'auth' in data[key] and data[key]['auth'] in [AUTH_UNCHANGED, AUTH_MASK]:
-                        data[key]['auth'] = existing[key].get('auth', '')
-                    existing[key].update(data[key])
-                else:
-                    existing[key] = data[key]
+            if key in existing and isinstance(existing[key], dict) and isinstance(data[key], dict):
+                # Handle auth masking for nested dicts
+                if 'auth' in data[key] and data[key]['auth'] in [AUTH_UNCHANGED, AUTH_MASK]:
+                    data[key]['auth'] = existing[key].get('auth', '')
+                existing[key].update(data[key])
+            else:
+                # Simple value update or new key
+                existing[key] = data[key]
         
         save_config(config)
         
@@ -1228,7 +1228,10 @@ def infer_text():
         synth_provider = synth_config.get('provider', 'browser')
         custom_prompt = persona.get('prompt', None)
         
-        logger.info(f"Using inference: provider={provider}, model={model}, synth={synth_provider}, persona={persona.get('name', 'default')}")
+        # Get persona's tool permissions
+        tool_permissions = persona.get('tools', {})
+        
+        logger.info(f"Using inference: provider={provider}, model={model}, synth={synth_provider}, persona={persona.get('name', 'default')}, tools={list(k for k,v in tool_permissions.items() if v)}")
         
         # Build messages array with system prompt (using persona's custom prompt)
         system_prompt = get_system_prompt(synth_provider, custom_prompt)
@@ -1247,9 +1250,8 @@ def infer_text():
         openai_compatible_protocols = ['openai_compatible', 'grok', 'openai', 'ollama', 'xai_realtime']
         
         if protocol in openai_compatible_protocols:
-            # Disable tools for Ollama - most small local models don't handle function calling well
-            enable_tools = protocol != 'ollama'
-            response_text = call_openai_compatible(url, auth, model, messages, enable_tools=enable_tools)
+            # Pass persona's tool permissions to the API call
+            response_text = call_openai_compatible(url, auth, model, messages, tool_permissions=tool_permissions)
         elif protocol in ['anthropic_messages', 'anthropic']:
             response_text = call_anthropic(url, auth, model, messages)
         elif protocol == 'browser_speech_api':
@@ -1274,7 +1276,7 @@ def infer_text():
         }), 500
 
 
-def call_openai_compatible(url: str, auth: str, model: str, messages: list, enable_tools: bool = True) -> str:
+def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool_permissions: dict = None) -> str:
     """Call an OpenAI-compatible API (Grok, OpenAI, Ollama, etc.) with tool support."""
     logger.debug(f"Calling OpenAI-compatible API: {url}, model: {model}")
     
@@ -1283,10 +1285,9 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, enab
         'Content-Type': 'application/json'
     }
     
-    # Define available tools
-    # Search tools use xAI SDK which has built-in x_search and web_search
-    tools = [
-        {
+    # Define all available tools
+    all_tools = {
+        "get_current_datetime": {
             "type": "function",
             "function": {
                 "name": "get_current_datetime",
@@ -1303,7 +1304,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, enab
                 }
             }
         },
-        {
+        "search_x": {
             "type": "function",
             "function": {
                 "name": "search_x",
@@ -1320,7 +1321,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, enab
                 }
             }
         },
-        {
+        "search_web": {
             "type": "function",
             "function": {
                 "name": "search_web",
@@ -1337,7 +1338,15 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, enab
                 }
             }
         }
-    ] if enable_tools else None
+    }
+    
+    # Filter tools based on persona permissions
+    tools = None
+    if tool_permissions:
+        enabled_tools = [all_tools[name] for name, enabled in tool_permissions.items() if enabled and name in all_tools]
+        if enabled_tools:
+            tools = enabled_tools
+            logger.debug(f"Enabled tools: {[t['function']['name'] for t in tools]}")
     
     payload = {
         'model': model,
@@ -1352,6 +1361,21 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, enab
     max_tool_iterations = 5
     for iteration in range(max_tool_iterations):
         response = requests.post(url, headers=headers, json=payload, timeout=120)
+        
+        # Check if model doesn't support tools - retry without them
+        if response.status_code == 400 and tools:
+            try:
+                error_data = response.json()
+                error_msg = error_data.get('error', {}).get('message', '')
+                if 'does not support tools' in error_msg:
+                    logger.warning(f"Model doesn't support tools, retrying without: {error_msg}")
+                    del payload['tools']
+                    del payload['tool_choice']
+                    tools = None
+                    response = requests.post(url, headers=headers, json=payload, timeout=120)
+            except:
+                pass
+        
         response.raise_for_status()
         
         data = response.json()
