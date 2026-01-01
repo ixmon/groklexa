@@ -1492,7 +1492,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "escalate_thinking",
-                "description": "Escalate complex reasoning to a more powerful cloud model for deep analysis. Use this when the user asks you to 'think deeply about', 'research', 'ponder', 'analyze thoroughly', or requests complex reasoning that would benefit from a superior model. The result will be available in future turns.",
+                "description": "ONLY use when the user EXPLICITLY says phrases like 'think deeply about this', 'research this topic for me', 'ponder this question', or 'I need a thorough analysis of'. Do NOT use for simple questions, casual conversation, opinions, or factual queries. This is an expensive cloud API call - reserve for explicit deep thinking requests only.",
                 "parameters": {
                     "type": "object",
                     "properties": {
