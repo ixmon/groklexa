@@ -98,8 +98,18 @@ def get_default_persona():
             "list_timers": True,
             "cancel_timer": True,
             "get_system_info": True,
+            "escalate_thinking": True,
             "search_x": True,
             "search_web": True
+        },
+        "escalation": {
+            "enabled": True,
+            "provider": "grok",
+            "model": "grok-4-1-fast-reasoning",
+            "url": "https://api.x.ai/v1/chat/completions",
+            "auth": "",
+            "max_context_turns": 3,
+            "rate_limit_per_hour": 10
         }
     }
 
@@ -1459,6 +1469,27 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
                     "required": []
                 }
             }
+        },
+        "escalate_thinking": {
+            "type": "function",
+            "function": {
+                "name": "escalate_thinking",
+                "description": "Escalate complex reasoning to a more powerful cloud model for deep analysis. Use this when the user asks you to 'think deeply about', 'research', 'ponder', 'analyze thoroughly', or requests complex reasoning that would benefit from a superior model. The result will be available in future turns.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The question or topic to think deeply about"
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Optional additional context from the conversation to help with analysis"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
         }
     }
     
@@ -1689,6 +1720,14 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         'memory_info': 'get_system_info',
         'get_disk_info': 'get_system_info',
         'disk_info': 'get_system_info',
+        # Escalation aliases
+        'think_deeply': 'escalate_thinking',
+        'deep_think': 'escalate_thinking',
+        'research': 'escalate_thinking',
+        'ponder': 'escalate_thinking',
+        'analyze': 'escalate_thinking',
+        'deep_analysis': 'escalate_thinking',
+        'thorough_analysis': 'escalate_thinking',
     }
     
     # Apply alias if exists
@@ -1733,6 +1772,8 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         return tool_cancel_timer(args.get('message') or args.get('timer') or args.get('which') or args.get('name'))
     elif function_name == 'get_system_info':
         return tool_get_system_info(args.get('detail_level', 'basic'))
+    elif function_name == 'escalate_thinking':
+        return tool_escalate_thinking(args.get('query', ''), args.get('context', ''), auth)
     elif function_name == 'search_x':
         return tool_search_x(args.get('query', ''), auth)
     elif function_name == 'search_web':
@@ -1772,6 +1813,10 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         if 'system' in function_lower or 'server' in function_lower or 'hardware' in function_lower or 'resource' in function_lower:
             logger.info(f"Fuzzy matched '{function_name}' to get_system_info")
             return tool_get_system_info(args.get('detail_level', 'basic'))
+        
+        if 'think' in function_lower or 'research' in function_lower or 'ponder' in function_lower or 'analyze' in function_lower or 'escalat' in function_lower:
+            logger.info(f"Fuzzy matched '{function_name}' to escalate_thinking")
+            return tool_escalate_thinking(args.get('query', ''), args.get('context', ''), auth)
         
         return f"Unknown tool: {function_name}"
 
@@ -1872,6 +1917,212 @@ def tool_get_current_weather(location: str) -> str:
     except Exception as e:
         logger.error(f"Weather tool error: {e}")
         return f"Error getting weather: {str(e)}"
+
+
+# ========== ESCALATE THINKING ==========
+_thinking_rag_file = CONFIG_DIR / 'thinking_rag.json'
+_escalation_rate_limit = {}  # {persona_id: [(timestamp, tokens_used), ...]}
+_pending_thoughts = []  # List of pending/completed thoughts for announcement
+
+def load_thinking_rag() -> dict:
+    """Load the thinking RAG storage."""
+    if _thinking_rag_file.exists():
+        try:
+            with open(_thinking_rag_file, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {"insights": [], "usage": {"total_calls": 0, "total_tokens": 0}}
+
+def save_thinking_rag(rag: dict):
+    """Save the thinking RAG storage."""
+    with open(_thinking_rag_file, 'w') as f:
+        json.dump(rag, f, indent=2)
+
+def check_escalation_rate_limit(persona_id: str, limit_per_hour: int = 10) -> tuple[bool, int]:
+    """Check if escalation is allowed under rate limit. Returns (allowed, remaining)."""
+    import time
+    now = time.time()
+    hour_ago = now - 3600
+    
+    # Clean old entries
+    if persona_id in _escalation_rate_limit:
+        _escalation_rate_limit[persona_id] = [
+            (ts, tokens) for ts, tokens in _escalation_rate_limit[persona_id]
+            if ts > hour_ago
+        ]
+    else:
+        _escalation_rate_limit[persona_id] = []
+    
+    used = len(_escalation_rate_limit[persona_id])
+    remaining = max(0, limit_per_hour - used)
+    
+    return remaining > 0, remaining
+
+def extract_keywords(text: str) -> list:
+    """Extract simple keywords from text for RAG retrieval."""
+    import re
+    # Remove common words and extract meaningful terms
+    stopwords = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+                 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+                 'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare',
+                 'ought', 'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by',
+                 'from', 'as', 'into', 'through', 'during', 'before', 'after',
+                 'above', 'below', 'between', 'under', 'again', 'further', 'then',
+                 'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all',
+                 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor',
+                 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just',
+                 'and', 'but', 'if', 'or', 'because', 'until', 'while', 'about',
+                 'against', 'this', 'that', 'these', 'those', 'what', 'which', 'who',
+                 'whom', 'think', 'deeply', 'research', 'ponder', 'analyze', 'about',
+                 'me', 'my', 'you', 'your', 'it', 'its', 'we', 'our', 'they', 'their'}
+    
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+    keywords = [w for w in words if w not in stopwords]
+    # Return unique keywords, preserve order
+    seen = set()
+    return [w for w in keywords if not (w in seen or seen.add(w))][:10]
+
+def background_escalate_thinking(query: str, context: str, persona_id: str, escalation_config: dict):
+    """Background thread function to call cloud model and save result."""
+    import time
+    import uuid
+    
+    thought_id = str(uuid.uuid4())[:8]
+    logger.info(f"[Escalation {thought_id}] Starting deep thinking: {query[:50]}...")
+    
+    try:
+        # Build the reasoning prompt
+        system_prompt = """You are a superior reasoning engine. Provide thorough, structured analysis.
+Be comprehensive but concise. Use clear headings and bullet points where appropriate.
+Focus on insights, implications, and actionable conclusions."""
+        
+        user_prompt = f"Analyze this deeply:\n\n{query}"
+        if context:
+            user_prompt += f"\n\nContext from conversation:\n{context}"
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        # Call the cloud model
+        provider = escalation_config.get('provider', 'grok')
+        url = escalation_config.get('url', 'https://api.x.ai/v1/chat/completions')
+        auth = escalation_config.get('auth', '')
+        model = escalation_config.get('model', 'grok-4-1-fast-reasoning')
+        
+        if not auth:
+            # Try to get from environment
+            auth = os.environ.get('XAI_API_KEY', '')
+        
+        if not auth:
+            logger.error(f"[Escalation {thought_id}] No auth key for escalation")
+            return
+        
+        headers = {
+            'Authorization': f'Bearer {auth}',
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            'model': model,
+            'messages': messages,
+            'temperature': 0.7,
+            'max_tokens': 2000
+        }
+        
+        start_time = time.time()
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        
+        result = response.json()
+        thinking_result = result['choices'][0]['message']['content']
+        tokens_used = result.get('usage', {}).get('total_tokens', 0)
+        elapsed = time.time() - start_time
+        
+        logger.info(f"[Escalation {thought_id}] Complete in {elapsed:.1f}s, {tokens_used} tokens")
+        
+        # Extract keywords for retrieval
+        keywords = extract_keywords(query + " " + thinking_result)
+        
+        # Save to RAG
+        rag = load_thinking_rag()
+        insight = {
+            "id": thought_id,
+            "query": query,
+            "context": context[:500] if context else "",  # Limit stored context
+            "response": thinking_result,
+            "keywords": keywords,
+            "timestamp": time.time(),
+            "persona_id": persona_id,
+            "model": model,
+            "tokens_used": tokens_used
+        }
+        rag["insights"].append(insight)
+        rag["usage"]["total_calls"] += 1
+        rag["usage"]["total_tokens"] += tokens_used
+        save_thinking_rag(rag)
+        
+        # Track rate limit
+        if persona_id not in _escalation_rate_limit:
+            _escalation_rate_limit[persona_id] = []
+        _escalation_rate_limit[persona_id].append((time.time(), tokens_used))
+        
+        # Add to pending thoughts for announcement
+        _pending_thoughts.append({
+            "id": thought_id,
+            "query": query,
+            "response": thinking_result,
+            "persona_id": persona_id,
+            "timestamp": time.time(),
+            "announced": False
+        })
+        
+        logger.info(f"[Escalation {thought_id}] Saved to RAG with {len(keywords)} keywords")
+        
+    except Exception as e:
+        logger.error(f"[Escalation {thought_id}] Failed: {e}")
+
+def tool_escalate_thinking(query: str, context: str = '', auth: str = '') -> str:
+    """Escalate complex reasoning to a cloud model. Returns immediately, processes in background."""
+    import time
+    
+    if not query:
+        return "I need a question or topic to think deeply about."
+    
+    # Get active persona and escalation config
+    config = load_config()
+    persona_id = config.get('active_persona', 'default')
+    persona = config.get('personas', {}).get(persona_id, {})
+    escalation_config = persona.get('escalation', {})
+    
+    if not escalation_config.get('enabled', True):
+        return "Deep thinking is not enabled for this persona."
+    
+    # Check rate limit
+    limit = escalation_config.get('rate_limit_per_hour', 10)
+    allowed, remaining = check_escalation_rate_limit(persona_id, limit)
+    
+    if not allowed:
+        return f"I've reached my deep thinking limit for now. Please try again in about an hour."
+    
+    # Spawn background thread
+    thread = threading.Thread(
+        target=background_escalate_thinking,
+        args=(query, context, persona_id, escalation_config),
+        daemon=True
+    )
+    thread.start()
+    
+    # Return immediate acknowledgment
+    ack_phrases = [
+        f"Let me ponder that deeply... I'll have insights ready shortly. ({remaining-1} deep thoughts remaining this hour)",
+        f"Researching that thoroughly in the background... ({remaining-1} remaining)",
+        f"Thinking deeply about that... I'll integrate my analysis into our conversation. ({remaining-1} remaining)",
+    ]
+    import random
+    return random.choice(ack_phrases)
 
 
 def tool_get_system_info(detail_level: str = 'basic') -> str:
@@ -2239,6 +2490,82 @@ def ack_timer(timer_id):
     """Acknowledge a fired timer."""
     acknowledge_timer(timer_id)
     return jsonify({'success': True})
+
+
+# ========== ESCALATION ENDPOINTS ==========
+
+@app.route('/api/escalation/status', methods=['GET'])
+def get_escalation_status():
+    """Get escalation rate limit status and usage stats."""
+    config = load_config()
+    persona_id = config.get('active_persona', 'default')
+    persona = config.get('personas', {}).get(persona_id, {})
+    escalation_config = persona.get('escalation', {})
+    
+    limit = escalation_config.get('rate_limit_per_hour', 10)
+    allowed, remaining = check_escalation_rate_limit(persona_id, limit)
+    
+    rag = load_thinking_rag()
+    
+    return jsonify({
+        'success': True,
+        'enabled': escalation_config.get('enabled', True),
+        'rate_limit': {
+            'per_hour': limit,
+            'remaining': remaining,
+            'used': limit - remaining
+        },
+        'usage': rag.get('usage', {}),
+        'total_insights': len(rag.get('insights', []))
+    })
+
+
+@app.route('/api/escalation/pending', methods=['GET'])
+def get_pending_thoughts():
+    """Get any pending thoughts that are ready to announce."""
+    config = load_config()
+    persona_id = config.get('active_persona', 'default')
+    
+    ready = []
+    for thought in _pending_thoughts:
+        if thought['persona_id'] == persona_id and not thought['announced']:
+            ready.append({
+                'id': thought['id'],
+                'query': thought['query'],
+                'response': thought['response'],
+                'timestamp': thought['timestamp']
+            })
+    
+    return jsonify({
+        'success': True,
+        'pending': ready
+    })
+
+
+@app.route('/api/escalation/pending/<thought_id>/acknowledge', methods=['POST'])
+def ack_pending_thought(thought_id):
+    """Mark a pending thought as announced."""
+    for thought in _pending_thoughts:
+        if thought['id'] == thought_id:
+            thought['announced'] = True
+            logger.info(f"Acknowledged thought {thought_id}")
+            break
+    return jsonify({'success': True})
+
+
+@app.route('/api/escalation/insights', methods=['GET'])
+def get_insights():
+    """Get recent insights from the RAG store."""
+    rag = load_thinking_rag()
+    insights = rag.get('insights', [])
+    
+    # Return last 10, most recent first
+    recent = sorted(insights, key=lambda x: x.get('timestamp', 0), reverse=True)[:10]
+    
+    return jsonify({
+        'success': True,
+        'insights': recent
+    })
 
 
 def tool_search_x(query: str, auth: str) -> str:
