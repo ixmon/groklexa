@@ -1636,6 +1636,11 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         # Handle various parameter names the model might use
         minutes = args.get('minutes') or args.get('duration') or args.get('time')
         seconds = args.get('seconds')
+        time_interval = args.get('time_interval')  # Model sometimes uses this
+        
+        # Parse time_interval if provided (e.g., "10 seconds", "5 minutes")
+        if time_interval and not minutes and not seconds:
+            minutes = parse_duration_string(str(time_interval))
         
         # If seconds is provided directly, convert to minutes
         if seconds is not None:
