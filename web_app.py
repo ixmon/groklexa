@@ -94,6 +94,7 @@ def get_default_persona():
             "get_current_datetime": True,
             "get_current_weather": True,
             "set_timer": True,
+            "list_timers": True,
             "search_x": True,
             "search_web": True
         }
@@ -1379,6 +1380,18 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
                     "required": ["minutes"]
                 }
             }
+        },
+        "list_timers": {
+            "type": "function",
+            "function": {
+                "name": "list_timers",
+                "description": "List all active timers. Use this when the user asks what timers are set, how much time is left, or wants to check their reminders.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
         }
     }
     
@@ -1428,8 +1441,12 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
         tool_calls = message.get('tool_calls', [])
         
         if not tool_calls:
-            # No tool calls, return the content
-            return message.get('content', '')
+            # No tool calls - check if the model output JSON tool call in content
+            content = message.get('content', '')
+            parsed_result = try_parse_json_tool_call(content, auth)
+            if parsed_result:
+                return parsed_result
+            return content
         
         logger.info(f"Tool calls requested (iteration {iteration + 1}): {[tc['function']['name'] for tc in tool_calls]}")
         
@@ -1464,6 +1481,55 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
     return message.get('content', 'I was unable to complete the request after multiple tool calls.')
 
 
+def try_parse_json_tool_call(content: str, auth: str) -> str:
+    """Try to parse a JSON tool call from message content (fallback for models that output JSON)."""
+    import re
+    
+    if not content:
+        return None
+    
+    # Look for JSON-like patterns
+    json_patterns = [
+        r'\{["\']?name["\']?\s*:\s*["\'](\w+)["\'].*?["\']?parameters["\']?\s*:\s*(\{.*?\})\}',
+        r'\{["\']?function["\']?\s*:\s*["\'](\w+)["\'].*?["\']?arguments["\']?\s*:\s*(\{.*?\})\}',
+    ]
+    
+    for pattern in json_patterns:
+        match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
+        if match:
+            function_name = match.group(1)
+            try:
+                # Try to parse the parameters
+                params_str = match.group(2)
+                # Clean up common issues
+                params_str = params_str.replace("'", '"')
+                args = json.loads(params_str)
+                
+                logger.info(f"Parsed JSON tool call from content: {function_name}({args})")
+                
+                # Execute the tool
+                result = execute_tool(function_name, args, auth)
+                return result
+            except json.JSONDecodeError as e:
+                logger.debug(f"Failed to parse JSON tool params: {e}")
+                continue
+    
+    # Also try parsing the whole content as JSON
+    try:
+        data = json.loads(content.strip())
+        if isinstance(data, dict) and 'name' in data:
+            function_name = data['name']
+            args = data.get('parameters', data.get('arguments', {}))
+            
+            logger.info(f"Parsed full JSON tool call: {function_name}({args})")
+            result = execute_tool(function_name, args, auth)
+            return result
+    except json.JSONDecodeError:
+        pass
+    
+    return None
+
+
 def execute_tool(function_name: str, args: dict, auth: str) -> str:
     """Execute a tool and return the result."""
     if function_name == 'get_current_datetime':
@@ -1471,7 +1537,15 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
     elif function_name == 'get_current_weather':
         return tool_get_current_weather(args.get('location', ''))
     elif function_name == 'set_timer':
-        return tool_set_timer(args.get('minutes', 1), args.get('message', ''))
+        # Handle various parameter names the model might use
+        minutes = args.get('minutes') or args.get('duration') or args.get('time') or 1
+        if isinstance(minutes, str):
+            # Parse "1 minute", "5 minutes", "30 seconds" etc.
+            minutes = parse_duration_string(minutes)
+        message = args.get('message') or args.get('event') or args.get('reminder') or ''
+        return tool_set_timer(float(minutes), message)
+    elif function_name == 'list_timers':
+        return tool_list_timers()
     elif function_name == 'search_x':
         return tool_search_x(args.get('query', ''), auth)
     elif function_name == 'search_web':
@@ -1576,6 +1650,59 @@ def tool_get_current_weather(location: str) -> str:
     except Exception as e:
         logger.error(f"Weather tool error: {e}")
         return f"Error getting weather: {str(e)}"
+
+
+def parse_duration_string(duration_str: str) -> float:
+    """Parse duration strings like '5 minutes', '30 seconds', '1 hour' into minutes."""
+    import re
+    
+    duration_str = duration_str.lower().strip()
+    
+    # Try to extract number and unit
+    match = re.match(r'(\d+(?:\.\d+)?)\s*(second|sec|s|minute|min|m|hour|hr|h)?', duration_str)
+    if match:
+        value = float(match.group(1))
+        unit = match.group(2) or 'minute'
+        
+        if unit in ['second', 'sec', 's']:
+            return value / 60
+        elif unit in ['hour', 'hr', 'h']:
+            return value * 60
+        else:  # minutes
+            return value
+    
+    # Default to 1 minute if can't parse
+    return 1.0
+
+
+def tool_list_timers() -> str:
+    """List all active timers."""
+    import time
+    
+    current_time = time.time()
+    
+    with _timer_lock:
+        active = [t for t in _active_timers if t['status'] == 'active']
+    
+    if not active:
+        return "No active timers."
+    
+    lines = [f"You have {len(active)} active timer{'s' if len(active) != 1 else ''}:"]
+    
+    for timer in active:
+        remaining = max(0, timer['expires_at'] - current_time)
+        mins = int(remaining // 60)
+        secs = int(remaining % 60)
+        
+        if mins > 0:
+            time_left = f"{mins} minute{'s' if mins != 1 else ''} and {secs} second{'s' if secs != 1 else ''}"
+        else:
+            time_left = f"{secs} second{'s' if secs != 1 else ''}"
+        
+        message = timer.get('message', 'Timer')
+        lines.append(f"- {message}: {time_left} remaining")
+    
+    return "\n".join(lines)
 
 
 def tool_set_timer(minutes: float, message: str = '') -> str:

@@ -1313,8 +1313,8 @@
                     <label class="tool-toggle">
                         <input type="checkbox" id="toolTimer" checked>
                         <span class="tool-info">
-                            <span class="tool-name">⏱️ Timer</span>
-                            <span class="tool-desc">Set timers and reminders (local)</span>
+                            <span class="tool-name">⏱️ Timers</span>
+                            <span class="tool-desc">Set and list timers/reminders (local)</span>
                         </span>
                     </label>
                     <label class="tool-toggle">
@@ -3346,6 +3346,7 @@
                     get_current_datetime: toolDateTime.checked,
                     get_current_weather: toolWeather.checked,
                     set_timer: toolTimer.checked,
+                    list_timers: toolTimer.checked,  // Same toggle as set_timer
                     search_x: toolSearchX.checked,
                     search_web: toolSearchWeb.checked
                 };
