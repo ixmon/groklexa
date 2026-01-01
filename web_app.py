@@ -1868,31 +1868,31 @@ def tool_get_system_info(detail_level: str = 'basic') -> str:
     import platform
     import subprocess
     
-    lines = []
+    info = {}
     
     # Basic system info
-    lines.append(f"🖥️ System: {platform.system()} {platform.release()}")
-    lines.append(f"   Hostname: {platform.node()}")
+    info['system'] = f"{platform.system()} {platform.release()}"
+    info['hostname'] = platform.node()
     
     # CPU info
-    cpu_percent = psutil.cpu_percent(interval=0.5)
-    cpu_count = psutil.cpu_count()
+    info['cpu_percent'] = psutil.cpu_percent(interval=0.5)
+    info['cpu_cores'] = psutil.cpu_count()
     cpu_freq = psutil.cpu_freq()
-    lines.append(f"🔲 CPU: {cpu_percent}% used ({cpu_count} cores)")
     if cpu_freq:
-        lines.append(f"   Frequency: {cpu_freq.current:.0f} MHz")
+        info['cpu_freq_mhz'] = int(cpu_freq.current)
     
     # Memory info
     mem = psutil.virtual_memory()
-    mem_used_gb = mem.used / (1024**3)
-    mem_total_gb = mem.total / (1024**3)
-    lines.append(f"🧠 Memory: {mem.percent}% used ({mem_used_gb:.1f}GB / {mem_total_gb:.1f}GB)")
+    info['memory_percent'] = mem.percent
+    info['memory_used_gb'] = round(mem.used / (1024**3), 1)
+    info['memory_total_gb'] = round(mem.total / (1024**3), 1)
     
     # Disk info
     disk = psutil.disk_usage('/')
-    disk_used_gb = disk.used / (1024**3)
-    disk_total_gb = disk.total / (1024**3)
-    lines.append(f"💾 Disk (/): {disk.percent}% used ({disk_used_gb:.0f}GB / {disk_total_gb:.0f}GB)")
+    info['disk_percent'] = disk.percent
+    info['disk_used_gb'] = int(disk.used / (1024**3))
+    info['disk_total_gb'] = int(disk.total / (1024**3))
+    info['disk_free_gb'] = int(disk.free / (1024**3))
     
     # GPU info (try nvidia-smi)
     try:
@@ -1902,39 +1902,43 @@ def tool_get_system_info(detail_level: str = 'basic') -> str:
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
-            for i, line in enumerate(result.stdout.strip().split('\n')):
+            gpus = []
+            for line in result.stdout.strip().split('\n'):
                 parts = [p.strip() for p in line.split(',')]
                 if len(parts) >= 5:
                     name, mem_used, mem_total, util, temp = parts[:5]
-                    lines.append(f"🎮 GPU {i}: {name}")
-                    lines.append(f"   Utilization: {util}%, Memory: {mem_used}MB / {mem_total}MB, Temp: {temp}°C")
+                    gpus.append({
+                        'name': name,
+                        'utilization_percent': util,
+                        'memory_used_mb': mem_used,
+                        'memory_total_mb': mem_total,
+                        'temperature_c': temp
+                    })
+            info['gpus'] = gpus
     except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
         logger.debug(f"nvidia-smi not available: {e}")
-    
-    # Top processes by CPU (if detailed)
-    if detail_level == 'detailed':
-        lines.append("\n📊 Top Processes by CPU:")
-        procs = []
-        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
-            try:
-                pinfo = proc.info
-                procs.append(pinfo)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-        
-        # Sort by CPU and take top 5
-        procs.sort(key=lambda x: x.get('cpu_percent', 0) or 0, reverse=True)
-        for p in procs[:5]:
-            lines.append(f"   - {p['name']}: CPU {p.get('cpu_percent', 0):.1f}%, Mem {p.get('memory_percent', 0):.1f}%")
     
     # Uptime
     boot_time = psutil.boot_time()
     import time
     uptime_seconds = time.time() - boot_time
-    uptime_days = int(uptime_seconds // 86400)
-    uptime_hours = int((uptime_seconds % 86400) // 3600)
-    uptime_mins = int((uptime_seconds % 3600) // 60)
-    lines.append(f"⏱️ Uptime: {uptime_days}d {uptime_hours}h {uptime_mins}m")
+    info['uptime_days'] = int(uptime_seconds // 86400)
+    info['uptime_hours'] = int((uptime_seconds % 86400) // 3600)
+    info['uptime_minutes'] = int((uptime_seconds % 3600) // 60)
+    
+    # Format as readable text (no emojis for TTS)
+    lines = [
+        f"System: {info['system']} on {info['hostname']}",
+        f"CPU: {info['cpu_percent']}% used, {info['cpu_cores']} cores",
+        f"Memory: {info['memory_percent']}% used, {info['memory_used_gb']} of {info['memory_total_gb']} GB",
+        f"Disk: {info['disk_percent']}% used, {info['disk_free_gb']} GB free of {info['disk_total_gb']} GB total",
+    ]
+    
+    if 'gpus' in info:
+        for i, gpu in enumerate(info['gpus']):
+            lines.append(f"GPU {i}: {gpu['name']}, {gpu['utilization_percent']}% utilized, temperature {gpu['temperature_c']} degrees Celsius")
+    
+    lines.append(f"Uptime: {info['uptime_days']} days, {info['uptime_hours']} hours, {info['uptime_minutes']} minutes")
     
     return "\n".join(lines)
 
