@@ -1253,6 +1253,14 @@ def infer_text():
         
         # Build messages array with system prompt (using persona's custom prompt)
         system_prompt = get_system_prompt(synth_provider, custom_prompt)
+        
+        # Retrieve and inject relevant RAG insights
+        relevant_insights = retrieve_relevant_insights(text)
+        if relevant_insights:
+            insights_context = format_insights_for_context(relevant_insights)
+            system_prompt += insights_context
+            logger.info(f"Injected {len(relevant_insights)} RAG insights into context")
+        
         messages = [{'role': 'system', 'content': system_prompt}]
         
         for msg in conversation_history:
@@ -2083,6 +2091,49 @@ Focus on insights, implications, and actionable conclusions."""
         
     except Exception as e:
         logger.error(f"[Escalation {thought_id}] Failed: {e}")
+
+def retrieve_relevant_insights(query: str, max_results: int = 3) -> list:
+    """Retrieve relevant insights from RAG store based on keyword matching."""
+    rag = load_thinking_rag()
+    insights = rag.get('insights', [])
+    
+    if not insights:
+        return []
+    
+    query_keywords = set(extract_keywords(query))
+    
+    if not query_keywords:
+        return []
+    
+    # Score insights by keyword overlap
+    scored = []
+    for insight in insights:
+        insight_keywords = set(insight.get('keywords', []))
+        overlap = len(query_keywords & insight_keywords)
+        if overlap > 0:
+            scored.append((overlap, insight))
+    
+    # Sort by score and return top results
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item[1] for item in scored[:max_results]]
+
+
+def format_insights_for_context(insights: list) -> str:
+    """Format retrieved insights as context for the model."""
+    if not insights:
+        return ""
+    
+    lines = ["\n[Previous Deep Analysis - Use these insights if relevant to the user's question:]"]
+    for i, insight in enumerate(insights, 1):
+        query = insight.get('query', '')[:100]
+        response = insight.get('response', '')[:500]  # Limit to avoid context overflow
+        lines.append(f"\n--- Insight {i}: Re: \"{query}\" ---")
+        lines.append(response)
+        if len(insight.get('response', '')) > 500:
+            lines.append("... (truncated)")
+    
+    return "\n".join(lines)
+
 
 def tool_escalate_thinking(query: str, context: str = '', auth: str = '') -> str:
     """Escalate complex reasoning to a cloud model. Returns immediately, processes in background."""
