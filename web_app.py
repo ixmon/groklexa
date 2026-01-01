@@ -1595,10 +1595,15 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         'get_reminders': 'list_timers',
         'list_reminders': 'list_timers',
         'get_timers_set': 'list_timers',
+        'get_reminders_set': 'list_timers',
+        'get_active_timers': 'list_timers',
+        'get_active_reminders': 'list_timers',
         'show_timers': 'list_timers',
         'show_reminders': 'list_timers',
         'check_timers': 'list_timers',
         'check_reminders': 'list_timers',
+        'active_timers': 'list_timers',
+        'active_reminders': 'list_timers',
         # Cancel timer/reminder aliases
         'cancel_reminder': 'cancel_timer',
         'delete_timer': 'cancel_timer',
@@ -1660,6 +1665,37 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
     elif function_name == 'search_web':
         return tool_search_web(args.get('query', ''), auth)
     else:
+        # Fuzzy fallback - try to match unknown tools to known ones
+        function_lower = function_name.lower()
+        
+        if 'timer' in function_lower or 'reminder' in function_lower:
+            if 'list' in function_lower or 'get' in function_lower or 'show' in function_lower or 'check' in function_lower or 'active' in function_lower:
+                logger.info(f"Fuzzy matched '{function_name}' to list_timers")
+                return tool_list_timers()
+            elif 'cancel' in function_lower or 'delete' in function_lower or 'remove' in function_lower or 'stop' in function_lower:
+                logger.info(f"Fuzzy matched '{function_name}' to cancel_timer")
+                return tool_cancel_timer(args.get('message') or args.get('timer') or args.get('which'))
+            elif 'set' in function_lower or 'create' in function_lower or 'add' in function_lower or 'start' in function_lower:
+                logger.info(f"Fuzzy matched '{function_name}' to set_timer")
+                minutes = args.get('minutes') or args.get('duration') or args.get('time')
+                seconds = args.get('seconds')
+                if seconds:
+                    minutes = float(seconds) / 60
+                elif minutes and isinstance(minutes, str):
+                    minutes = parse_duration_string(minutes)
+                else:
+                    minutes = float(minutes) if minutes else 1.0
+                message = args.get('message') or args.get('event') or args.get('reminder') or ''
+                return tool_set_timer(float(minutes), message)
+        
+        if 'time' in function_lower or 'date' in function_lower:
+            logger.info(f"Fuzzy matched '{function_name}' to get_current_datetime")
+            return tool_get_current_datetime(args.get('timezone'))
+        
+        if 'weather' in function_lower:
+            logger.info(f"Fuzzy matched '{function_name}' to get_current_weather")
+            return tool_get_current_weather(args.get('location', ''))
+        
         return f"Unknown tool: {function_name}"
 
 
