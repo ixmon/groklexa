@@ -2626,12 +2626,25 @@ def tool_search_x(query: str, auth: str) -> str:
     
     logger.info(f"Searching X for: {query}")
     
+    # Get xAI API key - prefer explicit auth, then escalation config, then env var
+    xai_key = auth
+    if not xai_key:
+        config = load_config()
+        persona_id = config.get('active_persona', 'default')
+        persona = config.get('personas', {}).get(persona_id, {})
+        xai_key = persona.get('escalation', {}).get('auth', '')
+    if not xai_key:
+        xai_key = os.environ.get('XAI_API_KEY', '')
+    
+    if not xai_key:
+        return "X search requires xAI API key. Set XAI_API_KEY or configure escalation auth."
+    
     try:
         from xai_sdk import Client
         from xai_sdk.chat import user
         from xai_sdk.tools import x_search
         
-        client = Client(api_key=auth)
+        client = Client(api_key=xai_key)
         
         # Create a chat session with x_search tool
         # Note: Server-side tools require grok-4 family models
@@ -2667,12 +2680,25 @@ def tool_search_web(query: str, auth: str) -> str:
     
     logger.info(f"Searching web for: {query}")
     
+    # Get xAI API key - prefer explicit auth, then escalation config, then env var
+    xai_key = auth
+    if not xai_key:
+        config = load_config()
+        persona_id = config.get('active_persona', 'default')
+        persona = config.get('personas', {}).get(persona_id, {})
+        xai_key = persona.get('escalation', {}).get('auth', '')
+    if not xai_key:
+        xai_key = os.environ.get('XAI_API_KEY', '')
+    
+    if not xai_key:
+        return "Web search requires xAI API key. Set XAI_API_KEY or configure escalation auth."
+    
     try:
         from xai_sdk import Client
         from xai_sdk.chat import user
         from xai_sdk.tools import web_search
         
-        client = Client(api_key=auth)
+        client = Client(api_key=xai_key)
         
         # Create a chat session with web_search tool
         # Note: Server-side tools require grok-4 family models
