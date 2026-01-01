@@ -1344,7 +1344,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "search_x",
-                "description": "Search X (Twitter) for posts and discussions. ONLY use when the user EXPLICITLY asks to 'search X', 'check Twitter', 'what's trending', or 'what are people saying on X'. Do NOT use for general questions.",
+                "description": "Search X (Twitter) for trending topics or posts. ONLY use when the user EXPLICITLY says 'search X', 'check Twitter', 'what's trending on X', or 'search Twitter for'. NEVER use for opinions, personal questions, favorites, or general knowledge.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1361,7 +1361,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "search_web",
-                "description": "Search the web for information. ONLY use when the user EXPLICITLY asks to 'search the web', 'Google this', or 'look up'. Do NOT use for general knowledge questions you can answer directly.",
+                "description": "Search the web for current events or real-time information. ONLY use when the user EXPLICITLY says 'search the web', 'look this up online', or 'Google this for me'. NEVER use for opinions, personal questions about you, favorites, or anything you can answer from your own knowledge.",
                 "parameters": {
                     "type": "object",
                     "properties": {
