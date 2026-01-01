@@ -1731,11 +1731,20 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         # Escalation aliases
         'think_deeply': 'escalate_thinking',
         'deep_think': 'escalate_thinking',
-        'research': 'escalate_thinking',
         'ponder': 'escalate_thinking',
         'analyze': 'escalate_thinking',
         'deep_analysis': 'escalate_thinking',
         'thorough_analysis': 'escalate_thinking',
+        # Search aliases
+        'search': 'search_x',
+        'search_twitter': 'search_x',
+        'twitter_search': 'search_x',
+        'x_search': 'search_x',
+        'search_internet': 'search_web',
+        'internet_search': 'search_web',
+        'google': 'search_web',
+        'google_search': 'search_web',
+        'web': 'search_web',
     }
     
     # Apply alias if exists
@@ -1822,9 +1831,19 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
             logger.info(f"Fuzzy matched '{function_name}' to get_system_info")
             return tool_get_system_info(args.get('detail_level', 'basic'))
         
-        if 'think' in function_lower or 'research' in function_lower or 'ponder' in function_lower or 'analyze' in function_lower or 'escalat' in function_lower:
+        if 'think' in function_lower or 'ponder' in function_lower or 'analyze' in function_lower or 'escalat' in function_lower:
             logger.info(f"Fuzzy matched '{function_name}' to escalate_thinking")
             return tool_escalate_thinking(args.get('query', ''), args.get('context', ''), auth)
+        
+        if 'search' in function_lower or 'google' in function_lower:
+            query = args.get('query', '') or args.get('q', '') or args.get('term', '')
+            if 'x' in function_lower or 'twitter' in function_lower:
+                logger.info(f"Fuzzy matched '{function_name}' to search_x")
+                return tool_search_x(query, auth)
+            else:
+                # Default to search_x for general search
+                logger.info(f"Fuzzy matched '{function_name}' to search_x (default)")
+                return tool_search_x(query, auth)
         
         return f"Unknown tool: {function_name}"
 
