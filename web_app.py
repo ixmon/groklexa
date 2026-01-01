@@ -1463,12 +1463,15 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
     }
     
     # Filter tools based on persona permissions
+    # Default all tools to enabled, then override with persona config
+    default_permissions = {name: True for name in all_tools.keys()}
+    merged_permissions = {**default_permissions, **(tool_permissions or {})}
+    
     tools = None
-    if tool_permissions:
-        enabled_tools = [all_tools[name] for name, enabled in tool_permissions.items() if enabled and name in all_tools]
-        if enabled_tools:
-            tools = enabled_tools
-            logger.debug(f"Enabled tools: {[t['function']['name'] for t in tools]}")
+    enabled_tools = [all_tools[name] for name, enabled in merged_permissions.items() if enabled and name in all_tools]
+    if enabled_tools:
+        tools = enabled_tools
+        logger.debug(f"Enabled tools: {[t['function']['name'] for t in tools]}")
     
     payload = {
         'model': model,
