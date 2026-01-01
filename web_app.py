@@ -96,6 +96,7 @@ def get_default_persona():
             "set_timer": True,
             "set_reminder": True,
             "list_timers": True,
+            "cancel_timer": True,
             "search_x": True,
             "search_web": True
         }
@@ -1365,7 +1366,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "set_timer",
-                "description": "Set a timer or reminder. Use this when the user asks to be reminded in X minutes, set a timer, or wants an alert after a duration.",
+                "description": "Set a timer or reminder. Use this when the user asks to be reminded in X minutes/seconds, set a timer, or wants an alert after a duration.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1373,12 +1374,16 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
                             "type": "number",
                             "description": "Duration in minutes (can be decimal, e.g., 0.5 for 30 seconds)"
                         },
+                        "seconds": {
+                            "type": "number",
+                            "description": "Duration in seconds (alternative to minutes, e.g., 10 for 10 seconds, 30 for 30 seconds)"
+                        },
                         "message": {
                             "type": "string",
                             "description": "What to remind the user about (e.g., 'check the oven', 'take a break', 'meeting starts')"
                         }
                     },
-                    "required": ["minutes"]
+                    "required": []
                 }
             }
         },
@@ -1404,14 +1409,35 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
                     "properties": {
                         "minutes": {
                             "type": "number",
-                            "description": "How many minutes from now (can be decimal, e.g., 0.5 for 30 seconds)"
+                            "description": "How many minutes from now (can be decimal, e.g., 0.5 for 30 seconds, 0.167 for 10 seconds)"
+                        },
+                        "seconds": {
+                            "type": "number",
+                            "description": "Alternative: seconds from now (e.g., 10 for 10 seconds, 30 for 30 seconds)"
                         },
                         "message": {
                             "type": "string",
                             "description": "What to remind the user about"
                         }
                     },
-                    "required": ["minutes", "message"]
+                    "required": ["message"]
+                }
+            }
+        },
+        "cancel_timer": {
+            "type": "function",
+            "function": {
+                "name": "cancel_timer",
+                "description": "Cancel an active timer or reminder. Use this when the user wants to cancel, stop, delete, or remove a timer or reminder.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "Optional: the message/name of the timer to cancel. If not specified, cancels the most recent timer."
+                        }
+                    },
+                    "required": []
                 }
             }
         }
@@ -1573,6 +1599,15 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         'show_reminders': 'list_timers',
         'check_timers': 'list_timers',
         'check_reminders': 'list_timers',
+        # Cancel timer/reminder aliases
+        'cancel_reminder': 'cancel_timer',
+        'delete_timer': 'cancel_timer',
+        'delete_reminder': 'cancel_timer',
+        'remove_timer': 'cancel_timer',
+        'remove_reminder': 'cancel_timer',
+        'stop_timer': 'cancel_timer',
+        'clear_timer': 'cancel_timer',
+        'clear_reminder': 'cancel_timer',
         # DateTime aliases
         'get_time': 'get_current_datetime',
         'get_date': 'get_current_datetime',
@@ -1594,14 +1629,32 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         return tool_get_current_weather(args.get('location', ''))
     elif function_name == 'set_timer':
         # Handle various parameter names the model might use
-        minutes = args.get('minutes') or args.get('duration') or args.get('time') or 1
-        if isinstance(minutes, str):
-            # Parse "1 minute", "5 minutes", "30 seconds" etc.
-            minutes = parse_duration_string(minutes)
-        message = args.get('message') or args.get('event') or args.get('reminder') or ''
+        minutes = args.get('minutes') or args.get('duration') or args.get('time')
+        seconds = args.get('seconds')
+        
+        # If seconds is provided directly, convert to minutes
+        if seconds is not None:
+            try:
+                minutes = float(seconds) / 60
+            except (ValueError, TypeError):
+                if isinstance(seconds, str):
+                    minutes = parse_duration_string(seconds)
+        elif minutes is not None:
+            if isinstance(minutes, str):
+                # Parse "1 minute", "5 minutes", "30 seconds" etc.
+                minutes = parse_duration_string(minutes)
+            else:
+                minutes = float(minutes)
+        else:
+            minutes = 1.0  # Default
+            
+        message = args.get('message') or args.get('event') or args.get('reminder') or args.get('text') or ''
+        logger.info(f"set_timer: minutes={minutes}, message={message}, raw_args={args}")
         return tool_set_timer(float(minutes), message)
     elif function_name == 'list_timers':
         return tool_list_timers()
+    elif function_name == 'cancel_timer':
+        return tool_cancel_timer(args.get('message') or args.get('timer') or args.get('which') or args.get('name'))
     elif function_name == 'search_x':
         return tool_search_x(args.get('query', ''), auth)
     elif function_name == 'search_web':
@@ -1712,22 +1765,34 @@ def parse_duration_string(duration_str: str) -> float:
     """Parse duration strings like '5 minutes', '30 seconds', '1 hour' into minutes."""
     import re
     
-    duration_str = duration_str.lower().strip()
+    if not duration_str:
+        return 1.0
+        
+    duration_str = str(duration_str).lower().strip()
     
-    # Try to extract number and unit
-    match = re.match(r'(\d+(?:\.\d+)?)\s*(second|sec|s|minute|min|m|hour|hr|h)?', duration_str)
+    # Try to extract number and unit (handle plurals)
+    match = re.search(r'(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)?', duration_str)
     if match:
         value = float(match.group(1))
         unit = match.group(2) or 'minute'
         
-        if unit in ['second', 'sec', 's']:
+        logger.debug(f"Parsed duration: {value} {unit}")
+        
+        if unit.startswith('second') or unit.startswith('sec') or unit == 's':
             return value / 60
-        elif unit in ['hour', 'hr', 'h']:
+        elif unit.startswith('hour') or unit.startswith('hr') or unit == 'h':
             return value * 60
         else:  # minutes
             return value
     
+    # Try to parse as just a number (assume minutes)
+    try:
+        return float(duration_str)
+    except ValueError:
+        pass
+    
     # Default to 1 minute if can't parse
+    logger.warning(f"Could not parse duration: {duration_str}, defaulting to 1 minute")
     return 1.0
 
 
@@ -1741,7 +1806,7 @@ def tool_list_timers() -> str:
         active = [t for t in _active_timers if t['status'] == 'active']
     
     if not active:
-        return "No active timers."
+        return "No active timers or reminders."
     
     lines = [f"You have {len(active)} active timer{'s' if len(active) != 1 else ''}:"]
     
@@ -1755,10 +1820,55 @@ def tool_list_timers() -> str:
         else:
             time_left = f"{secs} second{'s' if secs != 1 else ''}"
         
-        message = timer.get('message', 'Timer')
+        message = timer.get('message', 'Timer') or 'Timer'
         lines.append(f"- {message}: {time_left} remaining")
     
     return "\n".join(lines)
+
+
+def tool_cancel_timer(message_or_index: str = None) -> str:
+    """Cancel a timer by message text or index (most recent first)."""
+    import time
+    
+    with _timer_lock:
+        active = [t for t in _active_timers if t['status'] == 'active']
+        
+        if not active:
+            return "No active timers to cancel."
+        
+        # Sort by creation time (most recent first for index-based cancellation)
+        active.sort(key=lambda t: t.get('created_at', 0), reverse=True)
+        
+        # Try to find by message match
+        if message_or_index:
+            message_lower = str(message_or_index).lower().strip()
+            
+            # Try to parse as index (1-based)
+            try:
+                idx = int(message_lower) - 1
+                if 0 <= idx < len(active):
+                    timer = active[idx]
+                    timer['status'] = 'cancelled'
+                    return f"Cancelled timer: {timer.get('message', 'Timer')}"
+            except ValueError:
+                pass
+            
+            # Find by message content
+            for timer in active:
+                timer_msg = (timer.get('message', '') or '').lower()
+                if message_lower in timer_msg or timer_msg in message_lower:
+                    timer['status'] = 'cancelled'
+                    return f"Cancelled timer: {timer.get('message', 'Timer')}"
+            
+            # If specific message not found, cancel the most recent
+            timer = active[0]
+            timer['status'] = 'cancelled'
+            return f"Could not find timer matching '{message_or_index}', cancelled most recent: {timer.get('message', 'Timer')}"
+        
+        # No message specified, cancel the most recent
+        timer = active[0]
+        timer['status'] = 'cancelled'
+        return f"Cancelled timer: {timer.get('message', 'Timer')}"
 
 
 def tool_set_timer(minutes: float, message: str = '') -> str:
