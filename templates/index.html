@@ -1325,6 +1325,13 @@
                         </span>
                     </label>
                     <label class="tool-toggle">
+                        <input type="checkbox" id="toolEscalate" checked>
+                        <span class="tool-info">
+                            <span class="tool-name">🧠 Deep Thinking</span>
+                            <span class="tool-desc">Escalate to cloud model for complex reasoning</span>
+                        </span>
+                    </label>
+                    <label class="tool-toggle">
                         <input type="checkbox" id="toolSearchX" checked>
                         <span class="tool-info">
                             <span class="tool-name">🐦 Search X</span>
@@ -3217,6 +3224,7 @@
         const toolWeather = document.getElementById('toolWeather');
         const toolTimer = document.getElementById('toolTimer');
         const toolSystemInfo = document.getElementById('toolSystemInfo');
+        const toolEscalate = document.getElementById('toolEscalate');
         const toolSearchX = document.getElementById('toolSearchX');
         const toolSearchWeb = document.getElementById('toolSearchWeb');
         
@@ -3358,6 +3366,7 @@
                     list_timers: toolTimer.checked,    // Same toggle as set_timer
                     cancel_timer: toolTimer.checked,   // Same toggle as set_timer
                     get_system_info: toolSystemInfo.checked,
+                    escalate_thinking: toolEscalate.checked,
                     search_x: toolSearchX.checked,
                     search_web: toolSearchWeb.checked
                 };
@@ -3779,6 +3788,7 @@
                         toolWeather.checked = config.tools.get_current_weather !== false;
                         toolTimer.checked = config.tools.set_timer !== false;
                         toolSystemInfo.checked = config.tools.get_system_info !== false;
+                        toolEscalate.checked = config.tools.escalate_thinking !== false;
                         toolSearchX.checked = config.tools.search_x !== false;
                         toolSearchWeb.checked = config.tools.search_web !== false;
                         console.log('[Groklexa] Loaded tool permissions:', config.tools);
@@ -4059,13 +4069,87 @@
             }
         }
         
+        // ========== DEEP THINKING POLLING ==========
+        
+        let thoughtPollInterval = null;
+        
+        async function checkPendingThoughts() {
+            try {
+                const response = await fetch('/api/escalation/pending');
+                const data = await response.json();
+                
+                if (data.success && data.pending && data.pending.length > 0) {
+                    for (const thought of data.pending) {
+                        console.log('[Groklexa] Deep thinking complete:', thought.id, thought.query);
+                        await announceThought(thought);
+                        
+                        // Acknowledge the thought
+                        await fetch(`/api/escalation/pending/${thought.id}/acknowledge`, { method: 'POST' });
+                    }
+                }
+            } catch (e) {
+                console.error('[Groklexa] Thought check error:', e);
+            }
+        }
+        
+        async function announceThought(thought) {
+            // Create a summary for voice announcement
+            const summary = thought.response.substring(0, 500);
+            const announcementText = `I've finished thinking deeply about ${thought.query.substring(0, 50)}. Here's what I found: ${summary}`;
+            
+            console.log('[Groklexa] Announcing thought:', thought.id);
+            updateStatus('Deep thinking complete!');
+            
+            // Add to chat history
+            addToHistory('assistant', `[Deep Analysis of "${thought.query}"]\n\n${thought.response}`);
+            
+            // Speak the summary using synthesis API
+            try {
+                const response = await fetch('/api/synthesize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: announcementText })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.audio) {
+                        await playServerAudio(data.audio, data.format || 'wav');
+                    }
+                }
+            } catch (e) {
+                console.error('[Groklexa] Failed to announce thought:', e);
+                // Fallback to browser speech
+                if ('speechSynthesis' in window) {
+                    const utterance = new SpeechSynthesisUtterance(announcementText);
+                    speechSynthesis.speak(utterance);
+                }
+            }
+        }
+        
+        function startThoughtPolling() {
+            if (!thoughtPollInterval) {
+                thoughtPollInterval = setInterval(checkPendingThoughts, 5000);  // Check every 5 seconds
+                console.log('[Groklexa] Thought polling started');
+            }
+        }
+        
+        function stopThoughtPolling() {
+            if (thoughtPollInterval) {
+                clearInterval(thoughtPollInterval);
+                thoughtPollInterval = null;
+                console.log('[Groklexa] Thought polling stopped');
+            }
+        }
+        
         // Load personas and config on page load
         async function initializeApp() {
             await loadPersonas();
             await loadApiConfig();
             
-            // Start timer polling
+            // Start polling
             startTimerPolling();
+            startThoughtPolling();
         }
         initializeApp();
     </script>
