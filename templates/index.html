@@ -1769,6 +1769,9 @@
                 '🎧': '<i data-lucide="headphones" class="status-icon"></i>',
                 '🔊': '<i data-lucide="volume-2" class="status-icon"></i>',
                 '⏳': '<i data-lucide="loader-2" class="status-icon spin"></i>',
+                '✅': '<i data-lucide="check-circle" class="status-icon"></i>',
+                '🧠': '<i data-lucide="sparkles" class="status-icon"></i>',
+                '🔧': '<i data-lucide="wrench" class="status-icon"></i>',
             };
             
             let processedMessage = message;
@@ -4144,12 +4147,22 @@
         
         // Load personas and config on page load
         async function initializeApp() {
+            showStatus('⏳ Loading configuration...', 'info');
+            
             await loadPersonas();
             await loadApiConfig();
+            
+            showStatus('⏳ Initializing audio systems...', 'info');
             
             // Start polling
             startTimerPolling();
             startThoughtPolling();
+            
+            // Wait a moment for audio context to be ready
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            showStatus('✅ Ready - say "Groklexa" to start', 'success');
+            console.log('[Groklexa] Initialization complete');
         }
         initializeApp();
     </script>
