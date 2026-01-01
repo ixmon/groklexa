@@ -842,6 +842,9 @@ def get_provider_models(provider):
         elif provider == 'ollama':
             models = fetch_ollama_models('http://localhost:11434/api/tags')
             fetch_success = len(models) > 0
+        elif provider == 'llama_cpp':
+            models = fetch_llamacpp_models('http://localhost:8080')
+            fetch_success = len(models) > 0
         elif provider == 'anthropic':
             # Anthropic doesn't have a models endpoint, return hardcoded
             models = [
@@ -930,6 +933,45 @@ def fetch_ollama_models(url: str) -> list:
         
     except Exception as e:
         logger.warning(f"Failed to fetch Ollama models (is Ollama running?): {e}")
+        return []
+
+
+def fetch_llamacpp_models(base_url: str) -> list:
+    """Fetch models from llama.cpp server.
+    
+    llama.cpp server loads one model at a time, so we query the /props or /models endpoint
+    to get the currently loaded model.
+    """
+    try:
+        # Try the OpenAI-compatible /v1/models endpoint first
+        response = requests.get(f"{base_url}/v1/models", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            models = []
+            for model in data.get('data', []):
+                model_id = model.get('id', 'unknown')
+                models.append({
+                    'id': model_id,
+                    'name': model_id
+                })
+            if models:
+                logger.info(f"Fetched {len(models)} models from llama.cpp")
+                return models
+        
+        # Fallback: try /props endpoint
+        response = requests.get(f"{base_url}/props", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            model_name = data.get('model', 'llama-model')
+            logger.info(f"Fetched model from llama.cpp /props: {model_name}")
+            return [{'id': model_name, 'name': model_name}]
+        
+        # If server is running but no model info, return generic option
+        logger.warning("llama.cpp server running but couldn't get model info")
+        return [{'id': 'default', 'name': 'Current Model'}]
+        
+    except Exception as e:
+        logger.warning(f"Failed to fetch llama.cpp models (is llama-server running?): {e}")
         return []
 
 
@@ -1315,8 +1357,8 @@ def infer_text():
         messages.append({'role': 'user', 'content': text})
         
         # Call the appropriate API
-        # Normalize protocol names (grok, openai, ollama all use OpenAI-compatible format)
-        openai_compatible_protocols = ['openai_compatible', 'grok', 'openai', 'ollama', 'xai_realtime']
+        # Normalize protocol names (grok, openai, ollama, llama.cpp all use OpenAI-compatible format)
+        openai_compatible_protocols = ['openai_compatible', 'grok', 'openai', 'ollama', 'llama_cpp', 'llamacpp', 'xai_realtime']
         
         if protocol in openai_compatible_protocols:
             # Pass persona's tool permissions to the API call

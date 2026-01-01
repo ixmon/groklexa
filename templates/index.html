@@ -1470,6 +1470,7 @@
                             <option value="anthropic">Anthropic (Claude)</option>
                             <option value="openai">OpenAI</option>
                             <option value="ollama">Local (Ollama)</option>
+                            <option value="llama_cpp">Local (llama.cpp)</option>
                             <option value="custom">Custom URL</option>
                         </select>
                     </div>
@@ -3647,9 +3648,11 @@
             inferenceModel.style.display = 'block';
             inferenceModel.innerHTML = '<option value="">Loading models...</option>';
             
-            // Show/hide URL for ollama (usually localhost)
+            // Show/hide URL for local providers (usually localhost)
             if (provider === 'ollama') {
                 document.getElementById('inferenceUrl').value = 'http://localhost:11434/v1/chat/completions';
+            } else if (provider === 'llama_cpp') {
+                document.getElementById('inferenceUrl').value = 'http://localhost:8080/v1/chat/completions';
             }
             
             try {
