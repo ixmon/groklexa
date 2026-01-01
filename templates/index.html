@@ -1311,6 +1311,13 @@
                         </span>
                     </label>
                     <label class="tool-toggle">
+                        <input type="checkbox" id="toolTimer" checked>
+                        <span class="tool-info">
+                            <span class="tool-name">⏱️ Timer</span>
+                            <span class="tool-desc">Set timers and reminders (local)</span>
+                        </span>
+                    </label>
+                    <label class="tool-toggle">
                         <input type="checkbox" id="toolSearchX" checked>
                         <span class="tool-info">
                             <span class="tool-name">🐦 Search X</span>
@@ -3201,6 +3208,7 @@
         // Tool permission checkboxes
         const toolDateTime = document.getElementById('toolDateTime');
         const toolWeather = document.getElementById('toolWeather');
+        const toolTimer = document.getElementById('toolTimer');
         const toolSearchX = document.getElementById('toolSearchX');
         const toolSearchWeb = document.getElementById('toolSearchWeb');
         
@@ -3337,6 +3345,7 @@
                 const tools = {
                     get_current_datetime: toolDateTime.checked,
                     get_current_weather: toolWeather.checked,
+                    set_timer: toolTimer.checked,
                     search_x: toolSearchX.checked,
                     search_web: toolSearchWeb.checked
                 };
@@ -3756,6 +3765,7 @@
                     if (config.tools) {
                         toolDateTime.checked = config.tools.get_current_datetime !== false;
                         toolWeather.checked = config.tools.get_current_weather !== false;
+                        toolTimer.checked = config.tools.set_timer !== false;
                         toolSearchX.checked = config.tools.search_x !== false;
                         toolSearchWeb.checked = config.tools.search_web !== false;
                         console.log('[Groklexa] Loaded tool permissions:', config.tools);
@@ -3945,10 +3955,104 @@
             }, 3000);
         }
         
+        // ========== TIMER POLLING ==========
+        
+        let timerPollInterval = null;
+        
+        async function checkTimers() {
+            try {
+                const response = await fetch('/api/timers');
+                const data = await response.json();
+                
+                if (data.success && data.fired && data.fired.length > 0) {
+                    for (const timer of data.fired) {
+                        console.log('[Groklexa] Timer fired:', timer.id, timer.message);
+                        await playTimerAlarm(timer);
+                        
+                        // Acknowledge the timer
+                        await fetch(`/api/timers/${timer.id}/acknowledge`, { method: 'POST' });
+                    }
+                }
+            } catch (e) {
+                console.error('[Groklexa] Timer check error:', e);
+            }
+        }
+        
+        async function playTimerAlarm(timer) {
+            const message = timer.message || 'Timer complete';
+            const alarmText = `Hey! Your ${formatDuration(timer.minutes)} timer is done. ${message}`;
+            
+            console.log('[Groklexa] Playing timer alarm:', alarmText);
+            
+            // Use the synthesis API to speak the alarm
+            try {
+                const response = await fetch('/api/synthesize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: alarmText })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success && data.audio_base64) {
+                    // Play server-generated audio
+                    const audioData = atob(data.audio_base64);
+                    const audioArray = new Uint8Array(audioData.length);
+                    for (let i = 0; i < audioData.length; i++) {
+                        audioArray[i] = audioData.charCodeAt(i);
+                    }
+                    const blob = new Blob([audioArray], { type: `audio/${data.audio_format || 'wav'}` });
+                    const audioUrl = URL.createObjectURL(blob);
+                    
+                    const audio = new Audio(audioUrl);
+                    audio.play();
+                } else if (data.use_browser) {
+                    // Use browser speech synthesis
+                    const utterance = new SpeechSynthesisUtterance(alarmText);
+                    speechSynthesis.speak(utterance);
+                }
+            } catch (e) {
+                console.error('[Groklexa] Failed to play timer alarm:', e);
+                // Fallback to browser speech
+                const utterance = new SpeechSynthesisUtterance(alarmText);
+                speechSynthesis.speak(utterance);
+            }
+        }
+        
+        function formatDuration(minutes) {
+            if (minutes >= 60) {
+                const hours = Math.floor(minutes / 60);
+                const mins = Math.floor(minutes % 60);
+                return mins > 0 ? `${hours} hour${hours !== 1 ? 's' : ''} and ${mins} minute${mins !== 1 ? 's' : ''}` : `${hours} hour${hours !== 1 ? 's' : ''}`;
+            } else if (minutes >= 1) {
+                return `${Math.floor(minutes)} minute${minutes !== 1 ? 's' : ''}`;
+            } else {
+                return `${Math.floor(minutes * 60)} second${minutes * 60 !== 1 ? 's' : ''}`;
+            }
+        }
+        
+        function startTimerPolling() {
+            if (!timerPollInterval) {
+                timerPollInterval = setInterval(checkTimers, 3000);  // Check every 3 seconds
+                console.log('[Groklexa] Timer polling started');
+            }
+        }
+        
+        function stopTimerPolling() {
+            if (timerPollInterval) {
+                clearInterval(timerPollInterval);
+                timerPollInterval = null;
+                console.log('[Groklexa] Timer polling stopped');
+            }
+        }
+        
         // Load personas and config on page load
         async function initializeApp() {
             await loadPersonas();
             await loadApiConfig();
+            
+            // Start timer polling
+            startTimerPolling();
         }
         initializeApp();
     </script>

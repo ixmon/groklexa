@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 import time
+import threading
+import uuid
 import requests
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory
@@ -91,6 +93,7 @@ def get_default_persona():
         "tools": {
             "get_current_datetime": True,
             "get_current_weather": True,
+            "set_timer": True,
             "search_x": True,
             "search_web": True
         }
@@ -1355,6 +1358,27 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
                     "required": ["location"]
                 }
             }
+        },
+        "set_timer": {
+            "type": "function",
+            "function": {
+                "name": "set_timer",
+                "description": "Set a timer or reminder. Use this when the user asks to be reminded in X minutes, set a timer, or wants an alert after a duration.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "minutes": {
+                            "type": "number",
+                            "description": "Duration in minutes (can be decimal, e.g., 0.5 for 30 seconds)"
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "What to remind the user about (e.g., 'check the oven', 'take a break', 'meeting starts')"
+                        }
+                    },
+                    "required": ["minutes"]
+                }
+            }
         }
     }
     
@@ -1446,6 +1470,8 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         return tool_get_current_datetime(args.get('timezone'))
     elif function_name == 'get_current_weather':
         return tool_get_current_weather(args.get('location', ''))
+    elif function_name == 'set_timer':
+        return tool_set_timer(args.get('minutes', 1), args.get('message', ''))
     elif function_name == 'search_x':
         return tool_search_x(args.get('query', ''), auth)
     elif function_name == 'search_web':
@@ -1476,6 +1502,10 @@ def tool_get_current_datetime(timezone: str = None) -> str:
 # Weather cache: {location: {'data': ..., 'timestamp': ...}}
 _weather_cache = {}
 _WEATHER_CACHE_DURATION = 30 * 60  # 30 minutes
+
+# Timer storage: list of active timers
+_active_timers = []
+_timer_lock = threading.Lock()
 
 def tool_get_current_weather(location: str) -> str:
     """Get current weather using OpenWeatherMap API with caching."""
@@ -1546,6 +1576,112 @@ def tool_get_current_weather(location: str) -> str:
     except Exception as e:
         logger.error(f"Weather tool error: {e}")
         return f"Error getting weather: {str(e)}"
+
+
+def tool_set_timer(minutes: float, message: str = '') -> str:
+    """Set a timer that will fire after the specified duration."""
+    import time
+    
+    if minutes <= 0:
+        return "Timer duration must be positive."
+    
+    if minutes > 1440:  # 24 hours max
+        return "Timer duration cannot exceed 24 hours."
+    
+    seconds = int(minutes * 60)
+    timer_id = str(uuid.uuid4())[:8]
+    expires_at = time.time() + seconds
+    
+    timer = {
+        'id': timer_id,
+        'minutes': minutes,
+        'seconds': seconds,
+        'message': message or 'Timer complete',
+        'expires_at': expires_at,
+        'status': 'active',
+        'created_at': time.time()
+    }
+    
+    with _timer_lock:
+        _active_timers.append(timer)
+    
+    # Format duration for response
+    if minutes >= 60:
+        hours = int(minutes // 60)
+        mins = int(minutes % 60)
+        duration_str = f"{hours} hour{'s' if hours != 1 else ''}"
+        if mins > 0:
+            duration_str += f" and {mins} minute{'s' if mins != 1 else ''}"
+    elif minutes >= 1:
+        duration_str = f"{int(minutes)} minute{'s' if minutes != 1 else ''}"
+    else:
+        duration_str = f"{seconds} second{'s' if seconds != 1 else ''}"
+    
+    if message:
+        result = f"Timer set for {duration_str}. I'll remind you: {message}"
+    else:
+        result = f"Timer set for {duration_str}."
+    
+    logger.info(f"Timer {timer_id} set: {duration_str}, message: '{message}'")
+    return result
+
+
+def get_fired_timers() -> list:
+    """Get list of timers that have fired and mark them as acknowledged."""
+    import time
+    
+    fired = []
+    current_time = time.time()
+    
+    with _timer_lock:
+        for timer in _active_timers:
+            if timer['status'] == 'active' and current_time >= timer['expires_at']:
+                timer['status'] = 'fired'
+                fired.append(timer.copy())
+        
+        # Clean up old acknowledged timers (keep for 1 minute after firing)
+        _active_timers[:] = [t for t in _active_timers 
+                            if t['status'] == 'active' or 
+                            (t['status'] == 'fired' and current_time - t['expires_at'] < 60)]
+    
+    return fired
+
+
+def acknowledge_timer(timer_id: str):
+    """Mark a timer as acknowledged."""
+    with _timer_lock:
+        for timer in _active_timers:
+            if timer['id'] == timer_id:
+                timer['status'] = 'acknowledged'
+                break
+
+
+@app.route('/api/timers', methods=['GET'])
+def get_timers():
+    """Get all active timers and any that have fired."""
+    import time
+    
+    fired = get_fired_timers()
+    current_time = time.time()
+    
+    with _timer_lock:
+        active = [t.copy() for t in _active_timers if t['status'] == 'active']
+        # Add remaining time to active timers
+        for t in active:
+            t['remaining_seconds'] = max(0, int(t['expires_at'] - current_time))
+    
+    return jsonify({
+        'success': True,
+        'active': active,
+        'fired': fired
+    })
+
+
+@app.route('/api/timers/<timer_id>/acknowledge', methods=['POST'])
+def ack_timer(timer_id):
+    """Acknowledge a fired timer."""
+    acknowledge_timer(timer_id)
+    return jsonify({'success': True})
 
 
 def tool_search_x(query: str, auth: str) -> str:
