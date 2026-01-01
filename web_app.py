@@ -94,6 +94,7 @@ def get_default_persona():
             "get_current_datetime": True,
             "get_current_weather": True,
             "set_timer": True,
+            "set_reminder": True,
             "list_timers": True,
             "search_x": True,
             "search_web": True
@@ -1385,11 +1386,32 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "list_timers",
-                "description": "List all active timers. Use this when the user asks what timers are set, how much time is left, or wants to check their reminders.",
+                "description": "List all active timers and reminders. Use this when the user asks what timers are set, how much time is left, or wants to check their reminders.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
                     "required": []
+                }
+            }
+        },
+        "set_reminder": {
+            "type": "function",
+            "function": {
+                "name": "set_reminder",
+                "description": "Set a reminder. Use this when the user asks to be reminded about something in X minutes. Same as set_timer but for reminder-style requests.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "minutes": {
+                            "type": "number",
+                            "description": "How many minutes from now (can be decimal, e.g., 0.5 for 30 seconds)"
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "What to remind the user about"
+                        }
+                    },
+                    "required": ["minutes", "message"]
                 }
             }
         }
@@ -1532,6 +1554,40 @@ def try_parse_json_tool_call(content: str, auth: str) -> str:
 
 def execute_tool(function_name: str, args: dict, auth: str) -> str:
     """Execute a tool and return the result."""
+    
+    # Normalize tool name aliases
+    tool_aliases = {
+        # Timer/reminder aliases
+        'set_reminder': 'set_timer',
+        'create_timer': 'set_timer',
+        'create_reminder': 'set_timer',
+        'add_timer': 'set_timer',
+        'add_reminder': 'set_timer',
+        'start_timer': 'set_timer',
+        # List timer/reminder aliases
+        'get_timers': 'list_timers',
+        'get_reminders': 'list_timers',
+        'list_reminders': 'list_timers',
+        'get_timers_set': 'list_timers',
+        'show_timers': 'list_timers',
+        'show_reminders': 'list_timers',
+        'check_timers': 'list_timers',
+        'check_reminders': 'list_timers',
+        # DateTime aliases
+        'get_time': 'get_current_datetime',
+        'get_date': 'get_current_datetime',
+        'current_time': 'get_current_datetime',
+        'current_date': 'get_current_datetime',
+        'what_time': 'get_current_datetime',
+        # Weather aliases
+        'get_weather': 'get_current_weather',
+        'weather': 'get_current_weather',
+        'check_weather': 'get_current_weather',
+    }
+    
+    # Apply alias if exists
+    function_name = tool_aliases.get(function_name, function_name)
+    
     if function_name == 'get_current_datetime':
         return tool_get_current_datetime(args.get('timezone'))
     elif function_name == 'get_current_weather':
