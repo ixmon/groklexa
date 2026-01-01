@@ -1304,6 +1304,13 @@
                         </span>
                     </label>
                     <label class="tool-toggle">
+                        <input type="checkbox" id="toolWeather" checked>
+                        <span class="tool-info">
+                            <span class="tool-name">🌤️ Weather</span>
+                            <span class="tool-desc">Current weather (requires OpenWeatherMap API)</span>
+                        </span>
+                    </label>
+                    <label class="tool-toggle">
                         <input type="checkbox" id="toolSearchX" checked>
                         <span class="tool-info">
                             <span class="tool-name">🐦 Search X</span>
@@ -3193,6 +3200,7 @@
         
         // Tool permission checkboxes
         const toolDateTime = document.getElementById('toolDateTime');
+        const toolWeather = document.getElementById('toolWeather');
         const toolSearchX = document.getElementById('toolSearchX');
         const toolSearchWeb = document.getElementById('toolSearchWeb');
         
@@ -3328,6 +3336,7 @@
             try {
                 const tools = {
                     get_current_datetime: toolDateTime.checked,
+                    get_current_weather: toolWeather.checked,
                     search_x: toolSearchX.checked,
                     search_web: toolSearchWeb.checked
                 };
@@ -3746,6 +3755,7 @@
                     // Load persona's tool permissions
                     if (config.tools) {
                         toolDateTime.checked = config.tools.get_current_datetime !== false;
+                        toolWeather.checked = config.tools.get_current_weather !== false;
                         toolSearchX.checked = config.tools.search_x !== false;
                         toolSearchWeb.checked = config.tools.search_web !== false;
                         console.log('[Groklexa] Loaded tool permissions:', config.tools);

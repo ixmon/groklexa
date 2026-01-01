@@ -45,6 +45,13 @@ certs/*.pem
 config/api_settings.json
 !config/api_settings.example.json
 
+# Voice samples (may have copyright issues)
+static/voices/*.wav
+static/voices/*.mp3
+static/voices/*.flac
+static/voices/*.ogg
+!static/voices/README.txt
+
 # OS
 .DS_Store
 Thumbs.db

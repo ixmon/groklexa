@@ -90,6 +90,7 @@ def get_default_persona():
         },
         "tools": {
             "get_current_datetime": True,
+            "get_current_weather": True,
             "search_x": True,
             "search_web": True
         }
@@ -1337,6 +1338,23 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
                     "required": ["query"]
                 }
             }
+        },
+        "get_current_weather": {
+            "type": "function",
+            "function": {
+                "name": "get_current_weather",
+                "description": "Get the current weather and forecast for a location. Use this when the user asks about weather, temperature, rain, snow, or outdoor conditions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": "City name, optionally with country code (e.g., 'London', 'Paris,FR', 'New York,US')"
+                        }
+                    },
+                    "required": ["location"]
+                }
+            }
         }
     }
     
@@ -1426,6 +1444,8 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
     """Execute a tool and return the result."""
     if function_name == 'get_current_datetime':
         return tool_get_current_datetime(args.get('timezone'))
+    elif function_name == 'get_current_weather':
+        return tool_get_current_weather(args.get('location', ''))
     elif function_name == 'search_x':
         return tool_search_x(args.get('query', ''), auth)
     elif function_name == 'search_web':
@@ -1451,6 +1471,81 @@ def tool_get_current_datetime(timezone: str = None) -> str:
         # Fallback to simple format
         from datetime import datetime
         return datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
+
+
+# Weather cache: {location: {'data': ..., 'timestamp': ...}}
+_weather_cache = {}
+_WEATHER_CACHE_DURATION = 30 * 60  # 30 minutes
+
+def tool_get_current_weather(location: str) -> str:
+    """Get current weather using OpenWeatherMap API with caching."""
+    import time
+    
+    if not location:
+        return "No location provided. Please specify a city name."
+    
+    # Check cache first
+    cache_key = location.lower().strip()
+    cached = _weather_cache.get(cache_key)
+    if cached:
+        age = time.time() - cached['timestamp']
+        if age < _WEATHER_CACHE_DURATION:
+            logger.debug(f"Weather cache hit for {location} (age: {age:.0f}s)")
+            return cached['data']
+    
+    # Get API key from environment
+    api_key = os.environ.get('OPENWEATHERMAP_API_KEY', '')
+    if not api_key:
+        return f"Weather service not configured. Set OPENWEATHERMAP_API_KEY environment variable. (Location requested: {location})"
+    
+    try:
+        # OpenWeatherMap API call
+        url = "https://api.openweathermap.org/data/2.5/weather"
+        params = {
+            'q': location,
+            'appid': api_key,
+            'units': 'imperial'  # Use Fahrenheit
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 404:
+            return f"Location '{location}' not found. Try a different city name."
+        
+        response.raise_for_status()
+        data = response.json()
+        
+        # Extract weather info
+        temp = data['main']['temp']
+        feels_like = data['main']['feels_like']
+        humidity = data['main']['humidity']
+        description = data['weather'][0]['description']
+        city_name = data['name']
+        country = data['sys'].get('country', '')
+        wind_speed = data['wind']['speed']
+        
+        # Format response
+        result = f"""Weather in {city_name}, {country}:
+- Conditions: {description.title()}
+- Temperature: {temp:.0f}°F (feels like {feels_like:.0f}°F)
+- Humidity: {humidity}%
+- Wind: {wind_speed:.0f} mph"""
+        
+        # Cache the result
+        _weather_cache[cache_key] = {
+            'data': result,
+            'timestamp': time.time()
+        }
+        
+        logger.info(f"Weather for {location}: {temp:.0f}°F, {description}")
+        return result
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Weather API error: {e}")
+        return f"Unable to fetch weather for {location}. Please try again later."
+    except Exception as e:
+        logger.error(f"Weather tool error: {e}")
+        return f"Error getting weather: {str(e)}"
 
 
 def tool_search_x(query: str, auth: str) -> str:

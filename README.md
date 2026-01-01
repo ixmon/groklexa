@@ -53,11 +53,17 @@ uv sync
 
 ### Setup
 
-Set your XAI API key:
+Set your API keys:
 
 ```bash
-export XAI_API_KEY="your-api-key-here"
+# Required for Grok inference and X/web search tools
+export XAI_API_KEY="your-xai-api-key"
+
+# Optional: For weather tool (free tier available)
+export OPENWEATHERMAP_API_KEY="your-openweathermap-key"
 ```
+
+Get your free OpenWeatherMap API key at: https://openweathermap.org/api
 
 ### Run
 
@@ -103,7 +109,7 @@ Personas let you create multiple AI personalities, each with their own:
 
 - **Custom system prompt** - Define personality, behavior, and constraints
 - **Voice settings** - Different TTS voice per persona (Chatterbox voice cloning, Edge TTS, or browser)
-- **Tool permissions** - Enable/disable DateTime, X search, and web search per persona
+- **Tool permissions** - Enable/disable tools per persona (DateTime, Weather, X search, Web search)
 - **Separate chat history** - Each persona maintains its own conversation
 
 **Example personas:**
