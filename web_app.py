@@ -1203,7 +1203,16 @@ Your responses will be spoken aloud. For best results:
     
     guidance = tts_guidance.get(synthesis_provider, default_guidance)
     
-    return f"{base_prompt}\n{guidance}"
+    # Tool usage guidance - critical for preventing over-eager tool calls
+    tool_guidance = """
+
+IMPORTANT - Tool Usage Rules:
+- ONLY use search_web or search_x when the user EXPLICITLY asks you to search (e.g., "search for", "look up", "Google this", "check Twitter")
+- ONLY use escalate_thinking when the user EXPLICITLY asks you to "think deeply", "research thoroughly", or "analyze this"
+- For casual conversation, opinions, personal questions about you, or things you already know - just respond directly WITHOUT calling any tools
+- When in doubt, respond conversationally rather than searching"""
+    
+    return f"{base_prompt}\n{guidance}\n{tool_guidance}"
 
 
 @app.route('/api/infer/text', methods=['POST'])
