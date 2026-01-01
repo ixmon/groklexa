@@ -1887,18 +1887,41 @@ def tool_get_system_info(detail_level: str = 'basic') -> str:
     info['hostname'] = platform.node()
     info['architecture'] = platform.machine()
     
-    # CPU model name (try /proc/cpuinfo on Linux, or platform.processor())
-    cpu_model = platform.processor()
-    if not cpu_model or cpu_model == 'aarch64':
-        try:
-            with open('/proc/cpuinfo', 'r') as f:
-                for line in f:
-                    if 'model name' in line.lower() or 'hardware' in line.lower():
-                        cpu_model = line.split(':')[1].strip()
-                        break
-        except:
-            pass
+    # CPU model name - try lscpu first, then /proc/cpuinfo
+    cpu_model = None
+    try:
+        result = subprocess.run(['lscpu'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            models = []
+            for line in result.stdout.split('\n'):
+                if 'Model name:' in line:
+                    model = line.split(':')[1].strip()
+                    if model not in models:
+                        models.append(model)
+            if models:
+                cpu_model = ' / '.join(models)
+    except:
+        pass
+    
+    if not cpu_model:
+        cpu_model = platform.processor()
+        if not cpu_model or cpu_model == 'aarch64':
+            try:
+                with open('/proc/cpuinfo', 'r') as f:
+                    for line in f:
+                        if 'model name' in line.lower():
+                            cpu_model = line.split(':')[1].strip()
+                            break
+            except:
+                pass
     info['cpu_model'] = cpu_model or 'Unknown'
+    
+    # Product name (useful for branded systems like DGX)
+    try:
+        with open('/sys/devices/virtual/dmi/id/product_name', 'r') as f:
+            info['product_name'] = f.read().strip().replace('_', ' ')
+    except:
+        info['product_name'] = None
     
     # CPU info
     info['cpu_percent'] = psutil.cpu_percent(interval=0.5)
@@ -1974,8 +1997,12 @@ def tool_get_system_info(detail_level: str = 'basic') -> str:
     info['uptime_minutes'] = int((uptime_seconds % 3600) // 60)
     
     # Format as readable text (no emojis for TTS)
+    system_line = f"System: {info['system']} on {info['hostname']}, {info['architecture']} architecture"
+    if info.get('product_name'):
+        system_line = f"System: {info['product_name']}, {info['system']}, {info['architecture']} architecture"
+    
     lines = [
-        f"System: {info['system']} on {info['hostname']}, {info['architecture']} architecture",
+        system_line,
         f"CPU: {info['cpu_model']}, {info['cpu_cores']} cores, {info['cpu_percent']}% used",
         f"Memory: {info['memory_percent']}% used, {info['memory_used_gb']} of {info['memory_total_gb']} GB",
         f"Disk: {info['disk_percent']}% used, {info['disk_free_gb']} GB free of {info['disk_total_gb']} GB total",
