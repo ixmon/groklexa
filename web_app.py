@@ -1677,6 +1677,18 @@ def execute_tool(function_name: str, args: dict, auth: str) -> str:
         'check_system': 'get_system_info',
         'hardware_info': 'get_system_info',
         'resource_usage': 'get_system_info',
+        'get_gpu_info': 'get_system_info',
+        'gpu_info': 'get_system_info',
+        'get_gpu_status': 'get_system_info',
+        'get_top_gpu_users': 'get_system_info',
+        'gpu_processes': 'get_system_info',
+        'get_gpu_processes': 'get_system_info',
+        'get_cpu_info': 'get_system_info',
+        'cpu_info': 'get_system_info',
+        'get_memory_info': 'get_system_info',
+        'memory_info': 'get_system_info',
+        'get_disk_info': 'get_system_info',
+        'disk_info': 'get_system_info',
     }
     
     # Apply alias if exists
@@ -1873,6 +1885,20 @@ def tool_get_system_info(detail_level: str = 'basic') -> str:
     # Basic system info
     info['system'] = f"{platform.system()} {platform.release()}"
     info['hostname'] = platform.node()
+    info['architecture'] = platform.machine()
+    
+    # CPU model name (try /proc/cpuinfo on Linux, or platform.processor())
+    cpu_model = platform.processor()
+    if not cpu_model or cpu_model == 'aarch64':
+        try:
+            with open('/proc/cpuinfo', 'r') as f:
+                for line in f:
+                    if 'model name' in line.lower() or 'hardware' in line.lower():
+                        cpu_model = line.split(':')[1].strip()
+                        break
+        except:
+            pass
+    info['cpu_model'] = cpu_model or 'Unknown'
     
     # CPU info
     info['cpu_percent'] = psutil.cpu_percent(interval=0.5)
@@ -1910,11 +1936,32 @@ def tool_get_system_info(detail_level: str = 'basic') -> str:
                     gpus.append({
                         'name': name,
                         'utilization_percent': util,
-                        'memory_used_mb': mem_used,
-                        'memory_total_mb': mem_total,
+                        'memory_used_mb': mem_used if mem_used != '[N/A]' else 'unknown',
+                        'memory_total_mb': mem_total if mem_total != '[N/A]' else 'unknown',
                         'temperature_c': temp
                     })
             info['gpus'] = gpus
+        
+        # Get GPU processes
+        proc_result = subprocess.run(
+            ['nvidia-smi', '--query-compute-apps=pid,name,used_memory',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5
+        )
+        if proc_result.returncode == 0 and proc_result.stdout.strip():
+            gpu_processes = []
+            for line in proc_result.stdout.strip().split('\n'):
+                if line.strip():
+                    parts = [p.strip() for p in line.split(',')]
+                    if len(parts) >= 3:
+                        pid, name, mem = parts[:3]
+                        gpu_processes.append({
+                            'pid': pid,
+                            'name': name,
+                            'memory_mb': mem
+                        })
+            if gpu_processes:
+                info['gpu_processes'] = gpu_processes
     except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
         logger.debug(f"nvidia-smi not available: {e}")
     
@@ -1928,15 +1975,23 @@ def tool_get_system_info(detail_level: str = 'basic') -> str:
     
     # Format as readable text (no emojis for TTS)
     lines = [
-        f"System: {info['system']} on {info['hostname']}",
-        f"CPU: {info['cpu_percent']}% used, {info['cpu_cores']} cores",
+        f"System: {info['system']} on {info['hostname']}, {info['architecture']} architecture",
+        f"CPU: {info['cpu_model']}, {info['cpu_cores']} cores, {info['cpu_percent']}% used",
         f"Memory: {info['memory_percent']}% used, {info['memory_used_gb']} of {info['memory_total_gb']} GB",
         f"Disk: {info['disk_percent']}% used, {info['disk_free_gb']} GB free of {info['disk_total_gb']} GB total",
     ]
     
     if 'gpus' in info:
         for i, gpu in enumerate(info['gpus']):
-            lines.append(f"GPU {i}: {gpu['name']}, {gpu['utilization_percent']}% utilized, temperature {gpu['temperature_c']} degrees Celsius")
+            mem_info = ""
+            if gpu['memory_used_mb'] != 'unknown' and gpu['memory_total_mb'] != 'unknown':
+                mem_info = f", {gpu['memory_used_mb']} of {gpu['memory_total_mb']} MB VRAM used"
+            lines.append(f"GPU {i}: {gpu['name']}, {gpu['utilization_percent']}% utilized{mem_info}, temperature {gpu['temperature_c']} degrees Celsius")
+    
+    if 'gpu_processes' in info:
+        lines.append(f"GPU processes ({len(info['gpu_processes'])} running):")
+        for proc in info['gpu_processes'][:5]:  # Limit to top 5
+            lines.append(f"  - {proc['name']} (PID {proc['pid']}): {proc['memory_mb']} MB")
     
     lines.append(f"Uptime: {info['uptime_days']} days, {info['uptime_hours']} hours, {info['uptime_minutes']} minutes")
     
