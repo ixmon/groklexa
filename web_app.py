@@ -1334,7 +1334,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "search_x",
-                "description": "Search X (formerly Twitter) for posts, news, and discussions. Use this when the user asks about recent events, trending topics, what people are saying, or needs real-time information from social media.",
+                "description": "Search X (Twitter) for posts and discussions. ONLY use when the user EXPLICITLY asks to 'search X', 'check Twitter', 'what's trending', or 'what are people saying on X'. Do NOT use for general questions.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1351,7 +1351,7 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             "type": "function",
             "function": {
                 "name": "search_web",
-                "description": "Search the web for information. Use this when the user asks about facts, news, or information that may require looking up current data.",
+                "description": "Search the web for information. ONLY use when the user EXPLICITLY asks to 'search the web', 'Google this', or 'look up'. Do NOT use for general knowledge questions you can answer directly.",
                 "parameters": {
                     "type": "object",
                     "properties": {
