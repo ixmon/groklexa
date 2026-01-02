@@ -1358,6 +1358,22 @@
             <span class="vad-label">Manual VAD (volume-based)</span>
         </div>
         
+        <div class="vad-toggle">
+            <label class="switch">
+                <input type="checkbox" id="earconsToggle" checked>
+                <span class="slider"></span>
+            </label>
+            <span class="vad-label">🔔 Earcons (UI sounds)</span>
+        </div>
+        
+        <div class="vad-toggle">
+            <label class="switch">
+                <input type="checkbox" id="fillersToggle" checked>
+                <span class="slider"></span>
+            </label>
+            <span class="vad-label">🗣️ Verbal fillers (umm, hmm...)</span>
+        </div>
+        
         <!-- API Configuration Section -->
         <div class="api-config-section">
             <div class="panel-section-header">
@@ -1678,6 +1694,10 @@
         let isProcessing = false;
         let isAISpeaking = false;  // Prevent VAD from hearing AI's speech
         let currentAbortController = null;
+        
+        // Audio feedback settings
+        let earconsEnabled = localStorage.getItem('earconsEnabled') !== 'false';
+        let fillersEnabled = localStorage.getItem('fillersEnabled') !== 'false';
         let wakeWordAborted = false;
 
         // ========== WAKE WORD DETECTION (OpenWakeWord) ==========
@@ -1920,6 +1940,11 @@
         
         // Play a file-based earcon
         function playFileEarcon(name) {
+            if (!earconsEnabled) {
+                console.log(`[Groklexa] Earcons disabled, skipping: ${name}`);
+                return;
+            }
+            
             if (earconContext.state === 'suspended') {
                 earconContext.resume();
             }
@@ -2012,6 +2037,11 @@
         
         // Play a persona-voiced filler
         function playPersonaFiller(phrase) {
+            if (!fillersEnabled) {
+                console.log(`[Groklexa] Fillers disabled, skipping: ${phrase}`);
+                return;
+            }
+            
             if (earconContext.state === 'suspended') {
                 earconContext.resume();
             }
@@ -3632,6 +3662,26 @@
                 stopVAD();
                 hideStatus();
             }
+        });
+        
+        // Earcons and fillers toggles
+        const earconsToggle = document.getElementById('earconsToggle');
+        const fillersToggle = document.getElementById('fillersToggle');
+        
+        // Initialize toggle states from localStorage
+        earconsToggle.checked = earconsEnabled;
+        fillersToggle.checked = fillersEnabled;
+        
+        earconsToggle.addEventListener('change', () => {
+            earconsEnabled = earconsToggle.checked;
+            localStorage.setItem('earconsEnabled', earconsEnabled);
+            console.log(`[Groklexa] Earcons ${earconsEnabled ? 'enabled' : 'disabled'}`);
+        });
+        
+        fillersToggle.addEventListener('change', () => {
+            fillersEnabled = fillersToggle.checked;
+            localStorage.setItem('fillersEnabled', fillersEnabled);
+            console.log(`[Groklexa] Fillers ${fillersEnabled ? 'enabled' : 'disabled'}`);
         });
         
         // ========== PERSONA MANAGEMENT ==========
