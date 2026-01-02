@@ -968,11 +968,12 @@ def fetch_llamacpp_models(base_url: str) -> list:
         
         # If server is running but no model info, return generic option
         logger.warning("llama.cpp server running but couldn't get model info")
-        return [{'id': 'default', 'name': 'Current Model'}]
+        return [{'id': 'default', 'name': 'Loaded Model (default)'}]
         
     except Exception as e:
         logger.warning(f"Failed to fetch llama.cpp models (is llama-server running?): {e}")
-        return []
+        # Return default option so user can still select llama.cpp
+        return [{'id': 'default', 'name': 'Loaded Model (default)'}]
 
 
 @app.route('/api/voices/<provider>')
