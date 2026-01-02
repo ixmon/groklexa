@@ -16,6 +16,7 @@ import requests
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from groklexa import XAIVoiceWebSocketWrapper
+from lib.memory_flair import MemoryFlair, EscalationPlan
 
 # Configure logging
 logging.basicConfig(
@@ -27,6 +28,27 @@ logger = logging.getLogger('groklexa')
 
 app = Flask(__name__, static_folder='static')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+
+def strip_thinking_tags(text: str) -> str:
+    """Remove <think>...</think> and similar reasoning tags from model output."""
+    if not text:
+        return text
+    
+    # Remove <think>...</think> blocks (including content)
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Remove orphaned <think> or </think> tags
+    text = re.sub(r'</?think>', '', text, flags=re.IGNORECASE)
+    
+    # Remove <reasoning>...</reasoning> blocks
+    text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'</?reasoning>', '', text, flags=re.IGNORECASE)
+    
+    # Clean up extra whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
 
 
 def strip_emojis_for_tts(text: str) -> str:
@@ -85,6 +107,181 @@ def serve_videos(filename):
 CONFIG_DIR = Path(__file__).parent / 'config'
 CONFIG_FILE = CONFIG_DIR / 'api_settings.json'
 CONFIG_EXAMPLE = CONFIG_DIR / 'api_settings.example.json'
+
+# ============================================================================
+# MEMORY FLAIR - Deterministic decision engine
+# ============================================================================
+
+# Cache of MemoryFlair instances per persona
+_memory_flair_instances: dict = {}
+_memory_flair_lock = threading.Lock()
+
+
+def get_memory_flair(persona_name: str, persona_config: dict = None) -> MemoryFlair:
+    """
+    Get or create a MemoryFlair instance for the given persona.
+    
+    Args:
+        persona_name: Name of the persona (used for DB path and caching)
+        persona_config: Optional persona configuration dict
+        
+    Returns:
+        MemoryFlair instance for this persona
+    """
+    global _memory_flair_instances
+    
+    with _memory_flair_lock:
+        if persona_name not in _memory_flair_instances:
+            # Determine persona style from config
+            buffer_style = "neutral"
+            if persona_config:
+                # Try to infer persona style from prompt or name
+                prompt = persona_config.get("prompt", "").lower()
+                name = persona_name.lower()
+                
+                if any(w in prompt or w in name for w in ["flirty", "playful", "fun", "witty"]):
+                    buffer_style = "flirty"
+                elif any(w in prompt or w in name for w in ["professional", "formal", "business"]):
+                    buffer_style = "professional"
+                elif any(w in prompt or w in name for w in ["snarky", "sarcastic", "edgy"]):
+                    buffer_style = "snarky"
+            
+            # Create DB in config directory
+            db_path = str(CONFIG_DIR / f"memory_flair_{persona_name}.db")
+            
+            logger.info(f"Creating MemoryFlair for persona '{persona_name}' with style '{buffer_style}'")
+            _memory_flair_instances[persona_name] = MemoryFlair(
+                db_path=db_path,
+                persona=buffer_style
+            )
+        
+        return _memory_flair_instances[persona_name]
+
+
+# ============================================================================
+# TIMING & FILLER SYSTEM - Track latencies and generate fillers
+# ============================================================================
+
+# Rolling averages for timing estimates (in milliseconds)
+_timing_stats = {
+    'transcription': {'samples': [], 'avg': 500},
+    'inference': {'samples': [], 'avg': 2000},
+    'synthesis': {'samples': [], 'avg': 1500},
+}
+_timing_stats_lock = threading.Lock()
+MAX_TIMING_SAMPLES = 20  # Keep last N samples for rolling average
+
+
+def record_timing(phase: str, duration_ms: float):
+    """Record a timing sample and update rolling average."""
+    global _timing_stats
+    with _timing_stats_lock:
+        if phase in _timing_stats:
+            samples = _timing_stats[phase]['samples']
+            samples.append(duration_ms)
+            # Keep only last N samples
+            if len(samples) > MAX_TIMING_SAMPLES:
+                samples.pop(0)
+            # Update average
+            _timing_stats[phase]['avg'] = sum(samples) / len(samples)
+
+
+def get_timing_estimates() -> dict:
+    """Get current timing estimates for each phase."""
+    with _timing_stats_lock:
+        return {
+            'transcription_ms': int(_timing_stats['transcription']['avg']),
+            'inference_ms': int(_timing_stats['inference']['avg']),
+            'synthesis_ms': int(_timing_stats['synthesis']['avg']),
+            'total_ms': int(sum(s['avg'] for s in _timing_stats.values())),
+        }
+
+
+# Filler phrases for different wait durations
+FILLER_PHRASES = {
+    'short': ['hmm', 'uh', 'oh'],  # < 1 second
+    'medium': ['umm', 'let me see', 'one moment'],  # 1-3 seconds
+    'long': ['give me a moment', 'thinking about that', 'let me think'],  # 3+ seconds
+    'tool': ['checking on that', 'looking that up', 'one sec'],  # Tool calls
+}
+
+# Cache directory for persona-specific fillers
+FILLER_CACHE_DIR = Path(__file__).parent / 'static' / 'fillers'
+
+
+def get_filler_cache_path(persona_name: str, phrase: str, voice: str) -> Path:
+    """Get the cache path for a filler audio file."""
+    # Use just the phrase as filename (normalized)
+    safe_phrase = phrase.lower().replace(' ', '-').replace("'", '')[:30]
+    return FILLER_CACHE_DIR / persona_name / f"{safe_phrase}.wav"
+
+
+def generate_filler_audio(phrase: str, voice: str, provider: str) -> bytes:
+    """Generate filler audio using the specified synthesis provider."""
+    if provider == 'chatterbox':
+        return synthesize_with_chatterbox(phrase, voice)
+    elif provider == 'edge_tts':
+        # Edge TTS is async, need to run it properly
+        return asyncio.run(synthesize_with_edge_tts(phrase, voice))
+    elif provider == 'openai_tts':
+        # Get config for OpenAI TTS
+        config = load_config()
+        persona = get_active_persona(config)
+        synth_config = persona.get('synthesis', {})
+        return synthesize_with_openai_tts(phrase, voice, synth_config)
+    else:
+        return None
+
+
+def ensure_persona_fillers(persona_name: str, voice: str, provider: str) -> bool:
+    """Ensure filler audio files exist for a persona. Generate if missing."""
+    cache_dir = FILLER_CACHE_DIR / persona_name
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Check if we already have fillers for this persona
+    existing_fillers = list(cache_dir.glob('*.wav'))
+    if len(existing_fillers) >= 6:  # Assume we have enough
+        return True
+    
+    logger.info(f"Generating fillers for persona '{persona_name}' with voice '{voice}'")
+    
+    # Generate a selection of fillers
+    phrases_to_generate = [
+        'hmm', 'umm', 'oh', 'let me see', 'one moment', 'thinking'
+    ]
+    
+    generated = 0
+    for phrase in phrases_to_generate:
+        cache_path = get_filler_cache_path(persona_name, phrase, voice)
+        if cache_path.exists():
+            continue
+        
+        try:
+            audio_data = generate_filler_audio(phrase, voice, provider)
+            if audio_data:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(cache_path, 'wb') as f:
+                    f.write(audio_data)
+                generated += 1
+                logger.info(f"Generated filler: {cache_path.name}")
+        except Exception as e:
+            logger.warning(f"Failed to generate filler '{phrase}': {e}")
+    
+    logger.info(f"Generated {generated} new fillers for persona '{persona_name}'")
+    return True
+
+
+def get_filler_for_wait(wait_ms: int, is_tool_call: bool = False) -> str:
+    """Get appropriate filler category based on expected wait time."""
+    if is_tool_call:
+        return 'tool'
+    elif wait_ms < 1000:
+        return 'short'
+    elif wait_ms < 3000:
+        return 'medium'
+    else:
+        return 'long'
+
 
 # Placeholder for unchanged auth strings
 AUTH_UNCHANGED = '__UNCHANGED__'
@@ -574,6 +771,164 @@ def duplicate_persona(persona_id):
         })
     except Exception as e:
         logger.error(f"Error duplicating persona: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================================
+# TIMING & FILLERS API
+# ============================================================================
+
+@app.route('/api/timing', methods=['GET'])
+def get_timing():
+    """Get current timing estimates for all phases."""
+    try:
+        return jsonify({
+            'success': True,
+            'timing': get_timing_estimates()
+        })
+    except Exception as e:
+        logger.error(f"Error getting timing: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/fillers/generate', methods=['POST'])
+def generate_fillers():
+    """Generate filler audio files for a persona using their configured voice."""
+    try:
+        data = request.json or {}
+        persona_id = data.get('persona_id')
+        
+        if not persona_id:
+            # Use active persona
+            config = load_config()
+            persona_id = config.get('active_persona', 'default')
+        
+        config = load_config()
+        personas = config.get('personas', {})
+        
+        if persona_id not in personas:
+            return jsonify({'success': False, 'error': f'Persona {persona_id} not found'}), 404
+        
+        persona = personas[persona_id]
+        mode = persona.get('mode', 'separate')
+        
+        if mode == 'single':
+            synth_config = persona.get('single', {})
+        else:
+            synth_config = persona.get('synthesis', {})
+        
+        provider = synth_config.get('provider', 'edge_tts')
+        voice = synth_config.get('voice', 'en-US-AvaNeural')
+        
+        if provider == 'browser':
+            return jsonify({
+                'success': False,
+                'error': 'Cannot generate fillers for browser synthesis'
+            }), 400
+        
+        # Generate fillers in background
+        def generate_async():
+            try:
+                ensure_persona_fillers(persona_id, voice, provider)
+            except Exception as e:
+                logger.error(f"Filler generation error: {e}", exc_info=True)
+        
+        thread = threading.Thread(target=generate_async, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Filler generation started for persona {persona_id}'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting filler generation: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/fillers/<persona_id>/get/<phrase>', methods=['GET'])
+def get_filler(persona_id, phrase):
+    """Get a specific filler audio file, generating if needed."""
+    try:
+        config = load_config()
+        personas = config.get('personas', {})
+        
+        if persona_id not in personas:
+            return jsonify({'success': False, 'error': f'Persona {persona_id} not found'}), 404
+        
+        persona = personas[persona_id]
+        mode = persona.get('mode', 'separate')
+        
+        if mode == 'single':
+            synth_config = persona.get('single', {})
+        else:
+            synth_config = persona.get('synthesis', {})
+        
+        provider = synth_config.get('provider', 'edge_tts')
+        voice = synth_config.get('voice', 'en-US-AvaNeural')
+        
+        if provider == 'browser':
+            return jsonify({'success': False, 'error': 'Browser synthesis cannot generate fillers'}), 400
+        
+        # Check if filler exists
+        cache_path = get_filler_cache_path(persona_id, phrase, voice)
+        
+        if not cache_path.exists():
+            # Generate the filler on-demand
+            logger.info(f"Generating filler '{phrase}' for persona '{persona_id}'")
+            try:
+                audio_data = generate_filler_audio(phrase, voice, provider)
+                if audio_data:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(cache_path, 'wb') as f:
+                        f.write(audio_data)
+                    logger.info(f"Generated filler: {cache_path.name}")
+                else:
+                    return jsonify({'success': False, 'error': 'Failed to generate filler'}), 500
+            except Exception as e:
+                logger.error(f"Filler generation error: {e}")
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        # Return the audio file
+        return send_from_directory(cache_path.parent, cache_path.name, mimetype='audio/wav')
+        
+    except Exception as e:
+        logger.error(f"Error getting filler: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/fillers/<persona_id>', methods=['GET'])
+def list_fillers(persona_id):
+    """List available filler audio files for a persona."""
+    try:
+        cache_dir = FILLER_CACHE_DIR / persona_id
+        
+        fillers = []
+        if cache_dir.exists():
+            for f in cache_dir.glob('*.wav'):
+                fillers.append({
+                    'filename': f.name,
+                    'path': f'/static/fillers/{persona_id}/{f.name}'
+                })
+        
+        # Also include stock earcons
+        earcons_dir = Path(__file__).parent / 'static' / 'earcons'
+        earcons = []
+        if earcons_dir.exists():
+            for f in earcons_dir.glob('*.wav'):
+                earcons.append({
+                    'filename': f.name,
+                    'path': f'/static/earcons/{f.name}'
+                })
+        
+        return jsonify({
+            'success': True,
+            'persona_fillers': fillers,
+            'stock_earcons': earcons
+        })
+        
+    except Exception as e:
+        logger.error(f"Error listing fillers: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -1129,6 +1484,8 @@ def transcribe():
             tmp_path = tmp_file.name
         
         try:
+            t_start = time.time()
+            
             if provider == 'local_whisper':
                 transcription = transcribe_with_local_whisper(tmp_path)
             elif provider in ['whisper', 'openai_whisper']:
@@ -1144,11 +1501,22 @@ def transcribe():
                 # Custom provider - assume Whisper-compatible
                 transcription = transcribe_with_whisper(url, auth, tmp_path)
             
-            logger.info(f"Transcription result: {transcription[:100]}...")
+            # Record timing
+            transcription_ms = (time.time() - t_start) * 1000
+            record_timing('transcription', transcription_ms)
+            
+            logger.info(f"Transcription result ({transcription_ms:.0f}ms): {transcription[:100]}...")
+            
+            # Get timing estimates for client
+            timing = get_timing_estimates()
             
             return jsonify({
                 'success': True,
-                'transcription': transcription
+                'transcription': transcription,
+                'timing': {
+                    'transcription_ms': int(transcription_ms),
+                    'estimates': timing
+                }
             })
             
         finally:
@@ -1311,7 +1679,34 @@ def infer_text():
         # Load active persona configuration
         config = load_config()
         persona = get_active_persona(config)
+        persona_name = config.get('active_persona', 'default')
         mode = persona.get('mode', 'single')
+        
+        # =====================================================================
+        # MEMORY FLAIR - Fast deterministic decision layer
+        # =====================================================================
+        flair = get_memory_flair(persona_name, persona)
+        escalation_plan = flair.decide(text, history=conversation_history)
+        
+        logger.info(f"MemoryFlair: state={escalation_plan.state}, tiers={escalation_plan.selected_tiers}, score={escalation_plan.escalation_score}")
+        
+        # If we have a deterministic response, return immediately (skip LLM)
+        if escalation_plan.deterministic_response:
+            logger.info(f"MemoryFlair: Using deterministic response (skipping LLM)")
+            return jsonify({
+                'success': True,
+                'response': escalation_plan.deterministic_response,
+                'tools_called': [],
+                'memory_flair': {
+                    'state': escalation_plan.state,
+                    'tiers': escalation_plan.selected_tiers,
+                    'score': escalation_plan.escalation_score,
+                    'earcon': escalation_plan.earcon,
+                    'filler': escalation_plan.filler,
+                    'deterministic': True,
+                    'max_wait': escalation_plan.max_wait_seconds
+                }
+            })
         
         if mode == 'single':
             # Use single API config
@@ -1357,9 +1752,11 @@ def infer_text():
         # Add current message
         messages.append({'role': 'user', 'content': text})
         
-        # Call the appropriate API
+        # Call the appropriate API with timing
         # Normalize protocol names (grok, openai, ollama, llama.cpp all use OpenAI-compatible format)
         openai_compatible_protocols = ['openai_compatible', 'grok', 'openai', 'ollama', 'llama_cpp', 'llamacpp', 'xai_realtime']
+        
+        t_infer_start = time.time()
         
         if protocol in openai_compatible_protocols:
             # Pass persona's tool permissions to the API call
@@ -1373,15 +1770,35 @@ def infer_text():
             logger.warning(f"Unknown protocol '{protocol}', trying OpenAI-compatible")
             response_text = call_openai_compatible(url, auth, model, messages)
         
-        logger.info(f"Inference response: {response_text[:100]}...")
+        # Record inference timing
+        inference_ms = (time.time() - t_infer_start) * 1000
+        record_timing('inference', inference_ms)
+        
+        logger.info(f"Inference response ({inference_ms:.0f}ms): {response_text[:100]}...")
         
         # Get tool calls that were made during this inference
         tools_called = list(_current_inference_tools) if _current_inference_tools else []
         
+        # Get timing estimates for client
+        timing_estimates = get_timing_estimates()
+        
         return jsonify({
             'success': True,
             'response': response_text,
-            'tools_called': tools_called
+            'tools_called': tools_called,
+            'memory_flair': {
+                'state': escalation_plan.state,
+                'tiers': escalation_plan.selected_tiers,
+                'score': escalation_plan.escalation_score,
+                'earcon': escalation_plan.earcon,
+                'filler': escalation_plan.filler,
+                'deterministic': False,
+                'max_wait': escalation_plan.max_wait_seconds
+            },
+            'timing': {
+                'inference_ms': int(inference_ms),
+                'estimates': timing_estimates
+            }
         })
         
     except Exception as e:
@@ -1659,6 +2076,20 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
         if not tool_calls:
             # No tool calls - check if the model output JSON tool call in content
             content = message.get('content', '')
+            
+            # Strip <think>...</think> reasoning tags that some models emit
+            content = strip_thinking_tags(content)
+            
+            # If content is empty or just whitespace after stripping, check if we have tool results
+            # and generate a summary from them
+            if not content or content.strip() == '':
+                # Check if there were tool results in the conversation
+                tool_results = [m.get('content', '') for m in payload['messages'] if m.get('role') == 'tool']
+                if tool_results:
+                    # Use the last tool result as the response
+                    content = tool_results[-1]
+                    logger.info(f"Empty model response, using tool result: {content[:100]}...")
+            
             parsed_result = try_parse_json_tool_call(content, auth)
             if parsed_result:
                 return parsed_result
@@ -1696,7 +2127,18 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
     
     # If we hit max iterations, return whatever we have
     logger.warning(f"Hit max tool iterations ({max_tool_iterations})")
-    return message.get('content', 'I was unable to complete the request after multiple tool calls.')
+    content = message.get('content', '')
+    content = strip_thinking_tags(content)
+    
+    # If still empty, summarize tool results
+    if not content or content.strip() == '':
+        tool_results = [m.get('content', '') for m in payload['messages'] if m.get('role') == 'tool']
+        if tool_results:
+            content = tool_results[-1]
+        else:
+            content = 'I was unable to complete the request after multiple tool calls.'
+    
+    return content
 
 
 def try_parse_json_tool_call(content: str, auth: str) -> str:
@@ -1985,13 +2427,13 @@ _active_timers = []
 _timer_lock = threading.Lock()
 
 def tool_get_current_weather(location: str) -> str:
-    """Get current weather using OpenWeatherMap API with caching."""
+    """Get current weather using Open-Meteo API (free, no registration required)."""
     import time
     
     if not location:
         return "No location provided. Please specify a city name."
     
-    # Check cache first
+    # Check weather cache first
     cache_key = location.lower().strip()
     cached = _weather_cache.get(cache_key)
     if cached:
@@ -2000,43 +2442,96 @@ def tool_get_current_weather(location: str) -> str:
             logger.debug(f"Weather cache hit for {location} (age: {age:.0f}s)")
             return cached['data']
     
-    # Get API key from environment
-    api_key = os.environ.get('OPENWEATHERMAP_API_KEY', '')
-    if not api_key:
-        return f"Weather service not configured. Set OPENWEATHERMAP_API_KEY environment variable. (Location requested: {location})"
-    
     try:
-        # OpenWeatherMap API call
-        url = "https://api.openweathermap.org/data/2.5/weather"
-        params = {
-            'q': location,
-            'appid': api_key,
-            'units': 'imperial'  # Use Fahrenheit
+        # Step 1: Check memory_flair geocache first (instant local lookup)
+        config = load_config()
+        persona_name = config.get('active_persona', 'default')
+        flair = get_memory_flair(persona_name)
+        
+        cached_geo = flair.get_cached_geocode(location)
+        
+        if cached_geo:
+            # Use cached geocode - no network call needed!
+            lat = cached_geo['latitude']
+            lon = cached_geo['longitude']
+            city_name = cached_geo['city_name']
+            admin = cached_geo['admin1']
+            country = cached_geo['country']
+            logger.debug(f"Geocache hit for {location}: {city_name}, {admin}, {country}")
+        else:
+            # Step 1b: Geocode via Open-Meteo API
+            geocode_url = "https://geocoding-api.open-meteo.com/v1/search"
+            geocode_params = {
+                'name': location,
+                'count': 1,
+                'language': 'en',
+                'format': 'json'
+            }
+            
+            geo_response = requests.get(geocode_url, params=geocode_params, timeout=10)
+            geo_response.raise_for_status()
+            geo_data = geo_response.json()
+            
+            if not geo_data.get('results'):
+                return f"Location '{location}' not found. Try a different city name."
+            
+            place = geo_data['results'][0]
+            lat = place['latitude']
+            lon = place['longitude']
+            city_name = place.get('name', location)
+            country = place.get('country', '')
+            admin = place.get('admin1', '')  # State/province
+            
+            # Cache the geocode result in memory_flair for next time
+            flair.cache_geocode(location, lat, lon, city_name, admin, country)
+            logger.debug(f"Cached geocode for {location}: {city_name}, {admin}, {country}")
+        
+        # Step 2: Get weather from Open-Meteo
+        weather_url = "https://api.open-meteo.com/v1/forecast"
+        weather_params = {
+            'latitude': lat,
+            'longitude': lon,
+            'current': 'temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m',
+            'temperature_unit': 'fahrenheit',
+            'wind_speed_unit': 'mph',
+            'timezone': 'auto'
         }
         
-        response = requests.get(url, params=params, timeout=10)
+        weather_response = requests.get(weather_url, params=weather_params, timeout=10)
+        weather_response.raise_for_status()
+        weather_data = weather_response.json()
         
-        if response.status_code == 404:
-            return f"Location '{location}' not found. Try a different city name."
-        
-        response.raise_for_status()
-        data = response.json()
+        current = weather_data.get('current', {})
         
         # Extract weather info
-        temp = data['main']['temp']
-        feels_like = data['main']['feels_like']
-        humidity = data['main']['humidity']
-        description = data['weather'][0]['description']
-        city_name = data['name']
-        country = data['sys'].get('country', '')
-        wind_speed = data['wind']['speed']
+        temp = current.get('temperature_2m', 0)
+        feels_like = current.get('apparent_temperature', temp)
+        humidity = current.get('relative_humidity_2m', 0)
+        wind_speed = current.get('wind_speed_10m', 0)
+        weather_code = current.get('weather_code', 0)
         
-        # Format response
-        result = f"""Weather in {city_name}, {country}:
-- Conditions: {description.title()}
-- Temperature: {temp:.0f}°F (feels like {feels_like:.0f}°F)
-- Humidity: {humidity}%
-- Wind: {wind_speed:.0f} mph"""
+        # Convert weather code to description
+        weather_descriptions = {
+            0: 'Clear sky', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
+            45: 'Foggy', 48: 'Depositing rime fog',
+            51: 'Light drizzle', 53: 'Moderate drizzle', 55: 'Dense drizzle',
+            61: 'Slight rain', 63: 'Moderate rain', 65: 'Heavy rain',
+            71: 'Slight snow', 73: 'Moderate snow', 75: 'Heavy snow',
+            80: 'Slight rain showers', 81: 'Moderate rain showers', 82: 'Violent rain showers',
+            85: 'Slight snow showers', 86: 'Heavy snow showers',
+            95: 'Thunderstorm', 96: 'Thunderstorm with slight hail', 99: 'Thunderstorm with heavy hail'
+        }
+        description = weather_descriptions.get(weather_code, 'Unknown conditions')
+        
+        # Format location string
+        location_str = city_name
+        if admin:
+            location_str += f", {admin}"
+        if country:
+            location_str += f", {country}"
+        
+        # Format response (TTS-friendly)
+        result = f"Weather in {location_str}: {description}. Temperature is {temp:.0f} degrees Fahrenheit, feels like {feels_like:.0f}. Humidity {humidity}%, wind {wind_speed:.0f} miles per hour."
         
         # Cache the result
         _weather_cache[cache_key] = {
@@ -2934,53 +3429,55 @@ def synthesize():
                 'text': text
             })
         
+        import base64
+        t_synth_start = time.time()
+        audio_data = None
+        audio_format = 'mp3'
+        
         if provider == 'edge_tts':
             # Use Edge TTS
             audio_data = asyncio.run(synthesize_with_edge_tts(text, voice))
-            if audio_data:
-                import base64
-                return jsonify({
-                    'success': True,
-                    'audio_base64': base64.b64encode(audio_data).decode('utf-8'),
-                    'audio_format': 'mp3'
-                })
-            else:
-                return jsonify({'success': False, 'error': 'Edge TTS synthesis failed'}), 500
+            audio_format = 'mp3'
         
-        if provider == 'openai_tts':
+        elif provider == 'openai_tts':
             url = api_config.get('url', 'https://api.openai.com/v1/audio/speech')
             auth = api_config.get('auth', '')
             audio_data = synthesize_with_openai_tts(url, auth, text, voice)
-            if audio_data:
-                import base64
-                return jsonify({
-                    'success': True,
-                    'audio_base64': base64.b64encode(audio_data).decode('utf-8'),
-                    'audio_format': 'mp3'
-                })
-            else:
-                return jsonify({'success': False, 'error': 'OpenAI TTS synthesis failed'}), 500
+            audio_format = 'mp3'
         
-        if provider == 'chatterbox':
+        elif provider == 'chatterbox':
             # Use Chatterbox TTS with voice cloning
             audio_data = synthesize_with_chatterbox(text, voice)
-            if audio_data:
-                import base64
-                return jsonify({
-                    'success': True,
-                    'audio_base64': base64.b64encode(audio_data).decode('utf-8'),
-                    'audio_format': 'wav'
-                })
-            else:
-                return jsonify({'success': False, 'error': 'Chatterbox synthesis failed. Check that voice reference exists.'}), 500
+            audio_format = 'wav'
         
-        # For other providers, fallback to browser
-        logger.warning(f"Server-side synthesis for {provider} not implemented, using browser")
-        return jsonify({
-            'success': True,
-            'use_browser': True,
-            'text': text
-        })
+        else:
+            # For other providers, fallback to browser
+            logger.warning(f"Server-side synthesis for {provider} not implemented, using browser")
+            return jsonify({
+                'success': True,
+                'use_browser': True,
+                'text': text
+            })
+        
+        if audio_data:
+            # Record synthesis timing
+            synthesis_ms = (time.time() - t_synth_start) * 1000
+            record_timing('synthesis', synthesis_ms)
+            
+            timing_estimates = get_timing_estimates()
+            logger.info(f"Synthesis complete ({synthesis_ms:.0f}ms)")
+            
+            return jsonify({
+                'success': True,
+                'audio_base64': base64.b64encode(audio_data).decode('utf-8'),
+                'audio_format': audio_format,
+                'timing': {
+                    'synthesis_ms': int(synthesis_ms),
+                    'estimates': timing_estimates
+                }
+            })
+        else:
+            return jsonify({'success': False, 'error': f'{provider} synthesis failed'}), 500
         
     except Exception as e:
         logger.error(f"Synthesis error: {e}", exc_info=True)

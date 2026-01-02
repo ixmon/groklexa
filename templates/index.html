@@ -1793,6 +1793,362 @@
         function hideStatus() {
             status.classList.add('hidden');
         }
+        
+        // ========== EARCON SYSTEM (Audio cues) ==========
+        
+        // Pre-generated earcon sounds using Web Audio API
+        const earconContext = new (window.AudioContext || window.webkitAudioContext)();
+        
+        function playEarcon(type) {
+            // Resume context if suspended (browser autoplay policy)
+            if (earconContext.state === 'suspended') {
+                earconContext.resume();
+            }
+            
+            const oscillator = earconContext.createOscillator();
+            const gainNode = earconContext.createGain();
+            oscillator.connect(gainNode);
+            gainNode.connect(earconContext.destination);
+            
+            const now = earconContext.currentTime;
+            
+            switch(type) {
+                case 'ding':
+                    // Single pleasant ding - for greetings/acknowledgment
+                    oscillator.type = 'sine';
+                    oscillator.frequency.setValueAtTime(880, now);
+                    gainNode.gain.setValueAtTime(0.2, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.3);
+                    break;
+                    
+                case 'blip':
+                    // Short blip - for uncertain/novel states
+                    oscillator.type = 'sine';
+                    oscillator.frequency.setValueAtTime(440, now);
+                    oscillator.frequency.exponentialRampToValueAtTime(660, now + 0.1);
+                    gainNode.gain.setValueAtTime(0.15, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.15);
+                    break;
+                    
+                case 'boop_boop':
+                    // Double boop - for tool intent
+                    oscillator.type = 'sine';
+                    oscillator.frequency.setValueAtTime(523, now);
+                    gainNode.gain.setValueAtTime(0.15, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+                    // Second boop
+                    setTimeout(() => {
+                        const osc2 = earconContext.createOscillator();
+                        const gain2 = earconContext.createGain();
+                        osc2.connect(gain2);
+                        gain2.connect(earconContext.destination);
+                        osc2.type = 'sine';
+                        osc2.frequency.setValueAtTime(659, earconContext.currentTime);
+                        gain2.gain.setValueAtTime(0.15, earconContext.currentTime);
+                        gain2.gain.exponentialRampToValueAtTime(0.01, earconContext.currentTime + 0.1);
+                        osc2.start(earconContext.currentTime);
+                        osc2.stop(earconContext.currentTime + 0.1);
+                    }, 120);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.1);
+                    break;
+                    
+                case 'whirr':
+                    // Soft whirr - for task-focused/heavy thinking
+                    oscillator.type = 'triangle';
+                    oscillator.frequency.setValueAtTime(220, now);
+                    oscillator.frequency.linearRampToValueAtTime(330, now + 0.2);
+                    oscillator.frequency.linearRampToValueAtTime(220, now + 0.4);
+                    gainNode.gain.setValueAtTime(0.1, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.5);
+                    break;
+                    
+                case 'processing':
+                    // Brief processing tone - for professional contexts
+                    oscillator.type = 'sine';
+                    oscillator.frequency.setValueAtTime(392, now);
+                    oscillator.frequency.exponentialRampToValueAtTime(494, now + 0.15);
+                    gainNode.gain.setValueAtTime(0.12, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.2);
+                    break;
+                    
+                default:
+                    // Default soft tone
+                    oscillator.type = 'sine';
+                    oscillator.frequency.setValueAtTime(440, now);
+                    gainNode.gain.setValueAtTime(0.1, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+                    oscillator.start(now);
+                    oscillator.stop(now + 0.2);
+            }
+            
+            console.log(`[Groklexa] Played earcon: ${type}`);
+        }
+        
+        // ========== FILE-BASED EARCONS & FILLERS ==========
+        
+        // Cache of loaded earcon/filler audio buffers
+        const earconCache = {};
+        const fillerCache = {};
+        let currentTiming = { transcription_ms: 500, inference_ms: 2000, synthesis_ms: 1500, total_ms: 4000 };
+        
+        // Preload stock earcons
+        async function preloadEarcons() {
+            const earconFiles = ['ding', 'thinking', 'active', 'speaking', 'tool_calling', 'error', 'waiting'];
+            
+            for (const name of earconFiles) {
+                try {
+                    const response = await fetch(`/static/earcons/${name}.wav`);
+                    if (response.ok) {
+                        const arrayBuffer = await response.arrayBuffer();
+                        earconCache[name] = await earconContext.decodeAudioData(arrayBuffer);
+                        console.log(`[Groklexa] Preloaded earcon: ${name}`);
+                    }
+                } catch (e) {
+                    console.warn(`[Groklexa] Could not preload earcon ${name}:`, e);
+                }
+            }
+        }
+        
+        // Play a file-based earcon
+        function playFileEarcon(name) {
+            if (earconContext.state === 'suspended') {
+                earconContext.resume();
+            }
+            
+            const buffer = earconCache[name];
+            if (!buffer) {
+                console.warn(`[Groklexa] Earcon not loaded: ${name}, using synthesized`);
+                playEarcon(name);  // Fall back to synthesized
+                return;
+            }
+            
+            const source = earconContext.createBufferSource();
+            source.buffer = buffer;
+            
+            const gainNode = earconContext.createGain();
+            gainNode.gain.value = 0.3;  // Adjust volume
+            
+            source.connect(gainNode);
+            gainNode.connect(earconContext.destination);
+            source.start();
+            
+            console.log(`[Groklexa] Played file earcon: ${name}`);
+        }
+        
+        // Load persona-specific fillers
+        let loadedFillerPersonaId = null;
+        
+        async function loadPersonaFillers(personaId) {
+            if (personaId === loadedFillerPersonaId && Object.keys(fillerCache).length > 0) {
+                return;  // Already loaded
+            }
+            loadedFillerPersonaId = personaId;
+            
+            try {
+                // First, try to load existing fillers
+                const response = await fetch(`/api/fillers/${personaId}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Load persona-specific fillers
+                    for (const filler of data.persona_fillers) {
+                        try {
+                            const audioResponse = await fetch(filler.path);
+                            if (audioResponse.ok) {
+                                const arrayBuffer = await audioResponse.arrayBuffer();
+                                // Extract name (e.g., "umm" from "umm.wav", "one-moment" from "one-moment.wav")
+                                const name = filler.filename.replace('.wav', '');
+                                fillerCache[name] = await earconContext.decodeAudioData(arrayBuffer);
+                                console.log(`[Groklexa] Loaded filler: ${name}`);
+                            }
+                        } catch (e) {
+                            console.warn(`[Groklexa] Could not load filler ${filler.filename}:`, e);
+                        }
+                    }
+                }
+                
+                // Pre-fetch all filler phrases if not already cached
+                const essentialFillers = ['umm', 'hmm', 'let-me-think', 'one-moment', 'well'];
+                for (const phrase of essentialFillers) {
+                    if (!fillerCache[phrase]) {
+                        // Don't await - let them generate in parallel
+                        fetchOrGenerateFiller(personaId, phrase).catch(e => 
+                            console.warn(`[Groklexa] Could not pre-fetch filler ${phrase}:`, e)
+                        );
+                    }
+                }
+                
+            } catch (e) {
+                console.warn('[Groklexa] Could not load persona fillers:', e);
+            }
+        }
+        
+        // Fetch a filler, generating it on-demand if needed
+        async function fetchOrGenerateFiller(personaId, phrase) {
+            try {
+                console.log(`[Groklexa] Fetching/generating filler: ${phrase}`);
+                const response = await fetch(`/api/fillers/${personaId}/get/${phrase}`);
+                
+                if (response.ok) {
+                    const arrayBuffer = await response.arrayBuffer();
+                    fillerCache[phrase] = await earconContext.decodeAudioData(arrayBuffer);
+                    console.log(`[Groklexa] Loaded filler: ${phrase}`);
+                    return true;
+                }
+            } catch (e) {
+                console.warn(`[Groklexa] Could not fetch filler ${phrase}:`, e);
+            }
+            return false;
+        }
+        
+        // Play a persona-voiced filler
+        function playPersonaFiller(phrase) {
+            if (earconContext.state === 'suspended') {
+                earconContext.resume();
+            }
+            
+            const buffer = fillerCache[phrase];
+            if (!buffer) {
+                console.warn(`[Groklexa] Filler not loaded: ${phrase}, using stock earcon`);
+                playFileEarcon('thinking');
+                return;
+            }
+            
+            const source = earconContext.createBufferSource();
+            source.buffer = buffer;
+            
+            const gainNode = earconContext.createGain();
+            gainNode.gain.value = 0.5;  // Slightly louder for voice fillers
+            
+            source.connect(gainNode);
+            gainNode.connect(earconContext.destination);
+            source.start();
+            
+            console.log(`[Groklexa] Played persona filler: ${phrase}`);
+        }
+        
+        // Filler rotation state
+        let lastFillerIndex = -1;
+        let fillerChainActive = false;
+        let fillerChainAbort = false;
+        
+        // Short fillers for quick responses, longer ones for extended waits
+        const shortFillers = ['umm', 'hmm', 'well'];
+        const longFillers = ['let-me-think', 'one-moment'];
+        const allFillers = [...shortFillers, ...longFillers];
+        
+        // Play a random filler from available options
+        function playRandomFiller(fromList = null) {
+            const phrases = fromList || allFillers;
+            const available = phrases.filter(f => fillerCache[f]);
+            
+            if (available.length === 0) {
+                // Fall back to any available filler or earcon
+                const anyAvailable = allFillers.filter(f => fillerCache[f]);
+                if (anyAvailable.length > 0) {
+                    playPersonaFiller(anyAvailable[0]);
+                } else {
+                    playFileEarcon('thinking');
+                }
+                return;
+            }
+            
+            // Pick a different filler than last time if possible
+            let index;
+            if (available.length === 1) {
+                index = 0;
+            } else {
+                do {
+                    index = Math.floor(Math.random() * available.length);
+                } while (index === lastFillerIndex && available.length > 1);
+            }
+            
+            lastFillerIndex = index;
+            playPersonaFiller(available[index]);
+        }
+        
+        // Chain fillers together to fill longer waits naturally
+        async function startFillerChain(expectedWaitMs) {
+            if (fillerChainActive) return;
+            fillerChainActive = true;
+            fillerChainAbort = false;
+            
+            // Play initial short filler immediately
+            playRandomFiller(shortFillers);
+            
+            // If expected wait is long enough, schedule follow-up fillers
+            if (expectedWaitMs > 2500) {
+                // Wait 0.8-1.5 seconds, then play a longer filler
+                const firstDelay = 800 + Math.random() * 700;
+                await sleep(firstDelay);
+                
+                if (!fillerChainAbort && fillerChainActive) {
+                    playRandomFiller(longFillers);
+                }
+                
+                // For very long waits (>5s), add another filler
+                if (expectedWaitMs > 5000 && !fillerChainAbort) {
+                    const secondDelay = 1500 + Math.random() * 1000;
+                    await sleep(secondDelay);
+                    
+                    if (!fillerChainAbort && fillerChainActive) {
+                        playRandomFiller(shortFillers);
+                    }
+                }
+            }
+            
+            fillerChainActive = false;
+        }
+        
+        // Stop filler chain when response arrives
+        function stopFillerChain() {
+            fillerChainAbort = true;
+            fillerChainActive = false;
+        }
+        
+        // Helper sleep function
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+        
+        // Play appropriate filler based on expected wait time
+        function playWaitFiller(estimatedWaitMs, isToolCall = false) {
+            // Only play fillers for longer waits
+            if (estimatedWaitMs < 800) {
+                return;  // Too short, no filler needed
+            }
+            
+            if (isToolCall) {
+                // Tool calls get a special earcon then chain
+                playFileEarcon('tool_calling');
+                // Start filler chain after the earcon
+                setTimeout(() => startFillerChain(estimatedWaitMs - 500), 500);
+                return;
+            }
+            
+            // Start the filler chain - it handles timing internally
+            startFillerChain(estimatedWaitMs);
+        }
+        
+        // Update timing estimates from API response
+        function updateTimingEstimates(timing) {
+            if (timing && timing.estimates) {
+                currentTiming = timing.estimates;
+                console.log(`[Groklexa] Updated timing: trans=${currentTiming.transcription_ms}ms, infer=${currentTiming.inference_ms}ms, synth=${currentTiming.synthesis_ms}ms`);
+            }
+        }
+        
+        // Initialize earcons on page load
+        preloadEarcons();
 
         function showResult(data) {
             let html = '';
@@ -1832,7 +2188,8 @@
                     // Resume VAD when audio finishes
                     aiAudioPlayer.onended = () => {
                         isAISpeaking = false;
-                        console.log('AI audio ended - resuming VAD');
+                        sileroAudioChunks = [];  // Clear any AI speech captured by recorder
+                        console.log('AI audio ended - resuming VAD (buffer cleared)');
                         if (isVadActive) {
                             showStatus('🎧 Listening for speech...', 'listening');
                         }
@@ -1841,16 +2198,19 @@
                     // Also handle if audio is paused or errors
                     aiAudioPlayer.onerror = () => {
                         isAISpeaking = false;
+                        sileroAudioChunks = [];  // Clear any AI speech captured by recorder
                         console.log('AI audio error - resuming VAD');
                     };
                     
                     aiAudioPlayer.play().catch(e => {
                         console.log('Could not auto-play audio:', e);
                         isAISpeaking = false;  // Resume VAD if playback fails
+                        sileroAudioChunks = [];  // Clear any AI speech captured by recorder
                     });
                 } catch (e) {
                     console.error('Error processing audio:', e);
                     isAISpeaking = false;
+                    sileroAudioChunks = [];  // Clear any AI speech captured by recorder
                 }
             }
             
@@ -2846,6 +3206,16 @@
                 // Step 2: Text inference via server
                 showStatus('🤔 Thinking...', 'processing');
                 
+                // Start filler chain based on expected wait time
+                const expectedInferenceMs = currentTiming.inference_ms || 2000;
+                if (expectedInferenceMs > 1500) {
+                    // Start a chain of fillers to fill the wait naturally
+                    startFillerChain(expectedInferenceMs);
+                } else if (expectedInferenceMs > 800) {
+                    // Short wait - just play thinking earcon
+                    playFileEarcon('thinking');
+                }
+                
                 currentAbortController = new AbortController();
                 const timeoutId = setTimeout(() => {
                     console.log('[Groklexa] Inference timeout after 60s');
@@ -2878,6 +3248,29 @@
                 
                 const aiResponse = data.response;
                 const toolsCalled = data.tools_called || [];
+                const memoryFlair = data.memory_flair || {};
+                
+                // Update timing estimates
+                if (data.timing) {
+                    updateTimingEstimates(data.timing);
+                }
+                
+                // Log memory_flair decision
+                if (memoryFlair.state) {
+                    console.log(`[Groklexa] MemoryFlair: state=${memoryFlair.state}, tiers=${memoryFlair.tiers?.join(',')}, score=${memoryFlair.score}, deterministic=${memoryFlair.deterministic}`);
+                }
+                
+                // Play earcon if specified (prefer file-based)
+                if (memoryFlair.earcon) {
+                    if (earconCache[memoryFlair.earcon]) {
+                        playFileEarcon(memoryFlair.earcon);
+                    } else {
+                        playEarcon(memoryFlair.earcon);  // Fall back to synthesized
+                    }
+                }
+                
+                // Stop any playing filler chain - response arrived!
+                stopFillerChain();
                 
                 console.log('[Groklexa] AI Response:', aiResponse.substring(0, 100) + '...');
                 if (toolsCalled.length > 0) {
@@ -2895,6 +3288,9 @@
                 });
                 
                 // Step 3: Synthesis (browser or server based on config)
+                // Play "speaking" earcon before synthesis starts
+                playFileEarcon('speaking');
+                
                 const synthConfig = currentApiConfig?.synthesis;
                 if (synthConfig?.provider === 'browser') {
                     console.log('[Groklexa] Using browser speech synthesis');
@@ -2914,6 +3310,7 @@
                 showStatus('Success!', 'success');
                 
             } catch (error) {
+                stopFillerChain();  // Stop fillers on error
                 if (error.name === 'AbortError') {
                     console.log('[Groklexa] Request aborted');
                     showStatus('Stopped', 'info');
@@ -2951,6 +3348,11 @@
                     return await transcribeWithWebSpeech(audioBlob);
                 }
                 throw new Error(data.error || 'Transcription failed');
+            }
+            
+            // Update timing estimates
+            if (data.timing) {
+                updateTimingEstimates(data.timing);
             }
             
             return data.transcription || '';
@@ -3077,6 +3479,11 @@
                 throw new Error(data.error || 'Synthesis failed');
             }
             
+            // Update timing estimates
+            if (data.timing) {
+                updateTimingEstimates(data.timing);
+            }
+            
             if (data.use_browser) {
                 // Server requested browser fallback
                 console.log('[Groklexa] Server requested browser synthesis fallback');
@@ -3122,17 +3529,19 @@
                     audio.onended = () => {
                         isAISpeaking = false;
                         browserTranscriptBuffer = '';
+                        sileroAudioChunks = [];  // Clear any AI speech captured by recorder
                         if (wakeWordState === 'active' && currentApiConfig?.mode === 'separate' && 
                             currentApiConfig?.transcription?.provider === 'browser') {
                             startBrowserTranscription();
                         }
-                        console.log('[Groklexa] Server audio complete - resuming VAD & transcription');
+                        console.log('[Groklexa] Server audio complete - resuming VAD & transcription (buffer cleared)');
                         // Don't revoke URL - keep it for the sidebar player
                         resolve();
                     };
                     
                     audio.onerror = (e) => {
                         isAISpeaking = false;
+                        sileroAudioChunks = [];  // Clear any AI speech captured by recorder
                         console.error('[Groklexa] Audio playback error:', e);
                         reject(new Error('Audio playback failed'));
                     };
@@ -3176,6 +3585,7 @@
                 
                 utterance.onerror = (event) => {
                     isAISpeaking = false;
+                    sileroAudioChunks = [];  // Clear any AI speech captured by recorder
                     // Resume browser transcription and clear any garbage it picked up
                     browserTranscriptBuffer = '';
                     startBrowserTranscription();
@@ -3192,13 +3602,14 @@
                 
                 utterance.onend = () => {
                     isAISpeaking = false;
+                    sileroAudioChunks = [];  // Clear any AI speech captured by recorder
                     // Resume browser transcription with clean buffer
                     browserTranscriptBuffer = '';
                     if (wakeWordState === 'active' && currentApiConfig?.mode === 'separate' && 
                         currentApiConfig?.transcription?.provider === 'browser') {
                         startBrowserTranscription();
                     }
-                    console.log('[Groklexa] Speech synthesis complete - resuming VAD & transcription');
+                    console.log('[Groklexa] Speech synthesis complete - resuming VAD & transcription (buffer cleared)');
                     resolve();
                 };
                 
@@ -3878,6 +4289,13 @@
                     // Store config globally for routing decisions
                     currentApiConfig = config;
                     console.log('[Groklexa] API config loaded:', config.mode, 'mode');
+                    
+                    // Load persona fillers in background (don't await - let it happen async)
+                    if (currentPersonaId) {
+                        loadPersonaFillers(currentPersonaId).then(() => {
+                            console.log('[Groklexa] Persona fillers ready');
+                        });
+                    }
                 }
             } catch (e) {
                 console.error('[Groklexa] Failed to load API config:', e);

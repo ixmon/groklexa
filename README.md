@@ -1,8 +1,21 @@
 # Groklexa
 
-A grok (and local AI) friendly hands free web app for voice interactions with AI
+**An edge AI orchestration framework for voice-first AI assistants**
 
-Groklexa is a fully in-browser voice assistant that wakes up when you say its custom wake word ("Groklexa" or whatever you choose), letting you chat hands-free with Grok without ever pressing a button.
+Groklexa is a fully in-browser voice assistant designed for **edge AI deployment** - running sophisticated AI pipelines on local hardware while seamlessly escalating to cloud services when needed. Wake up with a custom wake word ("Groklexa" or whatever you choose) and chat hands-free without pressing a button.
+
+## Edge AI Philosophy
+
+Groklexa is built around the principle of **intelligent orchestration** between local and cloud AI:
+
+- **Privacy-first**: Wake word detection and voice activity detection run 100% client-side - no audio leaves your device until you explicitly speak after activation
+- **Hybrid inference**: Run fast local models (Ollama, llama.cpp) for quick responses, with automatic escalation to cloud models (Grok, GPT-4) for complex reasoning
+- **Deterministic decisions**: A lightweight expert system (`memory_flair`) makes sub-10ms routing decisions without LLM inference
+- **Local tool calling**: Weather, timers, system info, and datetime run entirely on-device
+- **Cloud escalation**: X search, web search, and deep thinking offload to cloud APIs only when explicitly needed
+- **Voice cloning**: Chatterbox TTS runs locally for persona-specific voices without cloud dependencies
+
+This architecture is ideal for always-on assistants on edge devices like NVIDIA Jetson, home servers, or any GPU-equipped machine where you want responsive AI without constant cloud dependency.
 
 ## Features
 
@@ -53,17 +66,14 @@ uv sync
 
 ### Setup
 
-Set your API keys:
+Set your API key:
 
 ```bash
 # Required for Grok inference and X/web search tools
 export XAI_API_KEY="your-xai-api-key"
-
-# Optional: For weather tool (free tier available)
-export OPENWEATHERMAP_API_KEY="your-openweathermap-key"
 ```
 
-Get your free OpenWeatherMap API key at: https://openweathermap.org/api
+**Note:** The weather tool uses [Open-Meteo](https://open-meteo.com/) which requires no API key for non-commercial use. Location geocoding and forecasts work out of the box.
 
 ### Run
 
@@ -119,17 +129,33 @@ Personas let you create multiple AI personalities, each with their own:
 
 Create personas from the settings panel - each gets its own configuration and chat log.
 
-## Local Models (Ollama)
+## Local Models
 
-For fully local inference, Groklexa supports [Ollama](https://ollama.ai). Install Ollama, then pull a model:
+Groklexa supports multiple local inference backends for edge deployment:
+
+### Ollama
+
+[Ollama](https://ollama.ai) provides easy model management. Install Ollama, then pull a model:
 
 ```bash
 # Recommended for tool calling support:
 ollama pull llama3.2:3b       # Fast, supports tools (datetime, etc.)
 ollama pull mistral:7b        # Good quality, supports tools
+ollama pull qwen3:32b-q4_K_M  # High quality, supports tools (requires 24GB+ VRAM)
 
 # For best conversational quality (no tool support):
 ollama pull dolphin-llama3:8b # Uncensored, great for roleplay/characters
+```
+
+### llama.cpp
+
+For maximum performance on edge devices, [llama.cpp](https://github.com/ggerganov/llama.cpp) provides optimized inference:
+
+```bash
+# Start llama.cpp server with your model
+./llama-server -m your-model.gguf --port 8080
+
+# Configure in Groklexa as "llama_cpp" provider, URL: http://localhost:8080
 ```
 
 ### Model Comparison
@@ -138,11 +164,30 @@ ollama pull dolphin-llama3:8b # Uncensored, great for roleplay/characters
 |-------|------|--------------|----------|
 | `llama3.2:3b` | ~2GB | ✅ Yes | Fast responses with tool support |
 | `mistral:7b` | ~4GB | ✅ Yes | Balanced quality + tools |
+| `qwen3:32b-q4_K_M` | ~20GB | ✅ Yes | High quality reasoning + tools |
 | `dolphin-llama3:8b` | ~5GB | ❌ No | Best conversation quality, characters |
 
 **Recommended: `llama3.2:3b`** for tool calling support, or `dolphin-llama3:8b` for pure conversation quality.
 
 > **Note:** Tool support is model-dependent. If a model doesn't support tools, Groklexa automatically falls back to conversation-only mode.
+
+## Local Tool Calling
+
+Groklexa includes several tools that run entirely on-device:
+
+| Tool | Description | Cloud Required |
+|------|-------------|----------------|
+| `get_current_datetime` | Current date/time with timezone | ❌ No |
+| `get_current_weather` | Weather via Open-Meteo (free, no key) | ❌ No* |
+| `set_timer` / `list_timers` | Voice-announced reminders | ❌ No |
+| `get_system_info` | GPU temp, CPU, disk, processes | ❌ No |
+| `search_x` | X/Twitter trending search | ✅ Yes (xAI) |
+| `search_web` | Web search | ✅ Yes (xAI) |
+| `escalate_thinking` | Deep reasoning escalation | ✅ Yes (cloud LLM) |
+
+*Weather uses Open-Meteo API which is free and requires no registration.
+
+Tools can be enabled/disabled per-persona for privacy control.
 
 ## Project Structure
 

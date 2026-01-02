@@ -400,11 +400,26 @@ class MemoryFlair:
             )
         """)
         
+        # Geocache for location lookups (weather, etc.)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS geocache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT UNIQUE,
+                latitude REAL,
+                longitude REAL,
+                city_name TEXT,
+                admin1 TEXT,
+                country TEXT,
+                timestamp REAL
+            )
+        """)
+        
         # Create indices for fast lookup
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_topic ON memories(topic)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_persona ON memories(persona)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_states_timestamp ON states(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_corpus_keywords ON corpus(keywords)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_geocache_query ON geocache(query)")
         
         conn.commit()
         conn.close()
@@ -785,6 +800,114 @@ class MemoryFlair:
         """Get a random persona-flavored no-match response."""
         responses = self.persona_config.get("no_match_responses", ["I'm not sure."])
         return random.choice(responses)
+    
+    # ========================================================================
+    # GEOCACHE - Location lookup caching for weather/location tools
+    # ========================================================================
+    
+    def cache_geocode(self, query: str, lat: float, lon: float, 
+                      city_name: str, admin1: str = "", country: str = "") -> bool:
+        """
+        Cache a geocoded location for fast future lookups.
+        
+        Args:
+            query: The original location query (e.g., "Kill Devil Hills, NC")
+            lat: Latitude
+            lon: Longitude
+            city_name: Resolved city name
+            admin1: State/province
+            country: Country name
+            
+        Returns:
+            True if cached successfully
+        """
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            
+            # Normalize query for consistent matching
+            normalized_query = query.lower().strip()
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO geocache 
+                (query, latitude, longitude, city_name, admin1, country, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (normalized_query, lat, lon, city_name, admin1, country, time.time()))
+            
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            return False
+    
+    def get_cached_geocode(self, query: str, max_age_days: int = 30) -> Optional[Dict]:
+        """
+        Retrieve a cached geocode result.
+        
+        Args:
+            query: Location query to look up
+            max_age_days: Maximum age of cached result in days
+            
+        Returns:
+            Dict with lat, lon, city_name, admin1, country if found, else None
+        """
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            
+            normalized_query = query.lower().strip()
+            max_age_seconds = max_age_days * 24 * 60 * 60
+            min_timestamp = time.time() - max_age_seconds
+            
+            cursor.execute("""
+                SELECT latitude, longitude, city_name, admin1, country, timestamp
+                FROM geocache
+                WHERE query = ? AND timestamp > ?
+            """, (normalized_query, min_timestamp))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return {
+                    'latitude': row[0],
+                    'longitude': row[1],
+                    'city_name': row[2],
+                    'admin1': row[3],
+                    'country': row[4],
+                    'cached_at': row[5]
+                }
+            return None
+        except:
+            return None
+    
+    def get_recent_locations(self, limit: int = 5) -> List[Dict]:
+        """Get recently cached locations (for suggestions/autocomplete)."""
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT query, city_name, admin1, country, timestamp
+                FROM geocache
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (limit,))
+            
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    'query': row[0],
+                    'city_name': row[1],
+                    'admin1': row[2],
+                    'country': row[3],
+                    'timestamp': row[4]
+                })
+            
+            conn.close()
+            return results
+        except:
+            return []
 
 
 # ============================================================================
