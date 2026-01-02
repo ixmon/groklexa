@@ -2072,9 +2072,10 @@
         let fillerChainAbort = false;
         
         // Short fillers for quick responses, longer ones for extended waits
-        const shortFillers = ['umm', 'hmm', 'well'];
-        const longFillers = ['let-me-think', 'one-moment'];
-        const allFillers = [...shortFillers, ...longFillers];
+        const shortFillers = ['hmm', 'uh', 'oh', 'ah', 'so'];
+        const mediumFillers = ['umm...', 'well...'];
+        const longFillers = ['let-me-think', 'one-moment', 'let-me-see', 'give-me-a-moment'];
+        const allFillers = [...shortFillers, ...mediumFillers, ...longFillers];
         
         // Play a random filler from available options
         function playRandomFiller(fromList = null) {
@@ -2112,8 +2113,8 @@
             fillerChainActive = true;
             fillerChainAbort = false;
             
-            // Play initial short filler immediately
-            playRandomFiller(shortFillers);
+            // Play initial medium filler immediately (umm..., well...)
+            playRandomFiller(mediumFillers);
             
             // If expected wait is long enough, schedule follow-up fillers
             if (expectedWaitMs > 2500) {
@@ -2125,13 +2126,23 @@
                     playRandomFiller(longFillers);
                 }
                 
-                // For very long waits (>5s), add another filler
+                // For very long waits (>5s), add another short filler
                 if (expectedWaitMs > 5000 && !fillerChainAbort) {
                     const secondDelay = 1500 + Math.random() * 1000;
                     await sleep(secondDelay);
                     
                     if (!fillerChainAbort && fillerChainActive) {
                         playRandomFiller(shortFillers);
+                    }
+                }
+                
+                // For very long waits (>8s), add one more medium filler
+                if (expectedWaitMs > 8000 && !fillerChainAbort) {
+                    const thirdDelay = 1200 + Math.random() * 800;
+                    await sleep(thirdDelay);
+                    
+                    if (!fillerChainAbort && fillerChainActive) {
+                        playRandomFiller(mediumFillers);
                     }
                 }
             }

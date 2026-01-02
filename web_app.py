@@ -199,9 +199,9 @@ def get_timing_estimates() -> dict:
 
 # Filler phrases for different wait durations
 FILLER_PHRASES = {
-    'short': ['hmm', 'uh', 'oh'],  # < 1 second
-    'medium': ['umm', 'let me see', 'one moment'],  # 1-3 seconds
-    'long': ['give me a moment', 'thinking about that', 'let me think'],  # 3+ seconds
+    'short': ['hmm', 'uh', 'oh', 'ah'],  # Quick acknowledgments
+    'medium': ['umm...', 'well...', 'so...', 'let me see'],  # Thinking sounds
+    'long': ['let me think', 'one moment', 'give me a moment'],  # Longer pauses
     'tool': ['checking on that', 'looking that up', 'one sec'],  # Tool calls
 }
 
@@ -240,14 +240,19 @@ def ensure_persona_fillers(persona_name: str, voice: str, provider: str) -> bool
     
     # Check if we already have fillers for this persona
     existing_fillers = list(cache_dir.glob('*.wav'))
-    if len(existing_fillers) >= 6:  # Assume we have enough
+    if len(existing_fillers) >= 10:  # Assume we have enough
         return True
     
     logger.info(f"Generating fillers for persona '{persona_name}' with voice '{voice}'")
     
-    # Generate a selection of fillers
+    # Generate a selection of fillers - short and long variants
     phrases_to_generate = [
-        'hmm', 'umm', 'oh', 'let me see', 'one moment', 'thinking'
+        # Short acknowledgments
+        'hmm', 'uh', 'oh', 'ah', 'so',
+        # Medium thinking sounds (with ellipsis for longer duration)
+        'umm...', 'well...',
+        # Longer pauses  
+        'let me think', 'let me see', 'one moment', 'give me a moment'
     ]
     
     generated = 0
