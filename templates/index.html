@@ -752,6 +752,30 @@
             background: rgba(30, 30, 45, 0.8);
         }
         
+        .tool-divider {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--accent-light), transparent);
+            margin: 8px 0;
+        }
+        
+        .uth-toggle {
+            border: 1px solid var(--accent-light);
+            background: rgba(255, 200, 100, 0.1);
+        }
+        
+        .uth-toggle:hover {
+            background: rgba(255, 200, 100, 0.2);
+        }
+        
+        [data-theme="night"] .uth-toggle {
+            background: rgba(100, 150, 255, 0.1);
+            border-color: rgba(100, 150, 255, 0.3);
+        }
+        
+        [data-theme="night"] .uth-toggle:hover {
+            background: rgba(100, 150, 255, 0.2);
+        }
+
         .btn-save-prompt {
             margin-top: 8px;
             padding: 8px 16px;
@@ -1345,6 +1369,16 @@
                             <span class="tool-desc">Web search (requires xAI API)</span>
                         </span>
                     </label>
+                    
+                    <div class="tool-divider"></div>
+                    
+                    <label class="tool-toggle uth-toggle">
+                        <input type="checkbox" id="toolUTH">
+                        <span class="tool-info">
+                            <span class="tool-name">🔀 Universal Tool Handler</span>
+                            <span class="tool-desc">Route tool calls to xAI for reliable execution</span>
+                        </span>
+                    </label>
                 </div>
                 <button class="btn-save-prompt" id="saveToolsBtn">Save Tools</button>
             </details>
@@ -1820,6 +1854,12 @@
         const earconContext = new (window.AudioContext || window.webkitAudioContext)();
         
         function playEarcon(type) {
+            // Check if earcons are enabled
+            if (!earconsEnabled) {
+                console.log(`[Groklexa] Earcons disabled, skipping synthesized: ${type}`);
+                return;
+            }
+            
             // Resume context if suspended (browser autoplay policy)
             if (earconContext.state === 'suspended') {
                 earconContext.resume();
@@ -2072,10 +2112,15 @@
         let fillerChainAbort = false;
         
         // Short fillers for quick responses, longer ones for extended waits
-        const shortFillers = ['hmm', 'uh', 'oh', 'ah', 'so'];
-        const mediumFillers = ['umm...', 'well...'];
+        const shortFillers = ['hmm', 'uh', 'uhh', 'uhhh', 'oh', 'ah', 'so', 'um', 'umm', 'ummm', 'uhm', 'mmm'];
+        const mediumFillers = ['umm...', 'well...', 'hmmm'];
         const longFillers = ['let-me-think', 'one-moment', 'let-me-see', 'give-me-a-moment'];
-        const allFillers = [...shortFillers, ...mediumFillers, ...longFillers];
+        
+        // Tool call specific fillers - affirmations then transitions
+        const toolAffirmations = ['ok', 'ok...', 'okay', 'yes', 'yes...', 'sure', 'sure...', 'alright', 'alright...'];
+        const toolTransitions = ['hang-on', 'hang-on...', 'just-a-second', 'just-a-moment', 'one-sec', 'checking', 'checking...', 'looking-it-up', 'let-me-check', 'let-me-look'];
+        
+        const allFillers = [...shortFillers, ...mediumFillers, ...longFillers, ...toolAffirmations, ...toolTransitions];
         
         // Play a random filler from available options
         function playRandomFiller(fromList = null) {
@@ -2167,17 +2212,45 @@
             if (estimatedWaitMs < 800) {
                 return;  // Too short, no filler needed
             }
-            
+
             if (isToolCall) {
-                // Tool calls get a special earcon then chain
-                playFileEarcon('tool_calling');
-                // Start filler chain after the earcon
-                setTimeout(() => startFillerChain(estimatedWaitMs - 500), 500);
+                // Tool calls get affirmation first, then transition
+                playToolCallFillers(estimatedWaitMs);
                 return;
             }
-            
+
             // Start the filler chain - it handles timing internally
             startFillerChain(estimatedWaitMs);
+        }
+        
+        // Play tool call specific fillers: affirmation -> transition -> chain
+        async function playToolCallFillers(estimatedWaitMs) {
+            // First: play a tool affirmation ("ok...", "sure...", etc.)
+            const availableAffirmations = toolAffirmations.filter(f => fillerCache[f]);
+            if (availableAffirmations.length > 0) {
+                const affirmation = availableAffirmations[Math.floor(Math.random() * availableAffirmations.length)];
+                playPersonaFiller(affirmation);
+                console.log(`[Groklexa] Tool affirmation: ${affirmation}`);
+            } else {
+                // Fall back to earcon
+                playFileEarcon('tool_calling');
+            }
+            
+            // After 600-900ms: play a tool transition ("hang on...", "checking...", etc.)
+            const transitionDelay = 600 + Math.random() * 300;
+            setTimeout(() => {
+                const availableTransitions = toolTransitions.filter(f => fillerCache[f]);
+                if (availableTransitions.length > 0) {
+                    const transition = availableTransitions[Math.floor(Math.random() * availableTransitions.length)];
+                    playPersonaFiller(transition);
+                    console.log(`[Groklexa] Tool transition: ${transition}`);
+                }
+                
+                // If still waiting, start regular filler chain
+                if (estimatedWaitMs > 2000) {
+                    setTimeout(() => startFillerChain(estimatedWaitMs - transitionDelay - 800), 800);
+                }
+            }, transitionDelay);
         }
         
         // Update timing estimates from API response
@@ -2223,17 +2296,21 @@
                     
                     // Pause VAD while AI is speaking to prevent echo feedback
                     isAISpeaking = true;
+                    sileroAudioChunks = [];  // Clear buffer BEFORE playback to prevent contamination
                     showStatus('🔊 Groklexa speaking...', 'speaking');
-                    console.log('AI audio starting - pausing VAD');
+                    console.log('AI audio starting - pausing VAD, clearing audio buffer');
                     
-                    // Resume VAD when audio finishes
+                    // Resume VAD when audio finishes (with small delay for echo)
                     aiAudioPlayer.onended = () => {
-                        isAISpeaking = false;
-                        sileroAudioChunks = [];  // Clear any AI speech captured by recorder
-                        console.log('AI audio ended - resuming VAD (buffer cleared)');
-                        if (isVadActive) {
-                            showStatus('🎧 Listening for speech...', 'listening');
-                        }
+                        // Small delay to allow any echo/reverb to dissipate
+                        setTimeout(() => {
+                            isAISpeaking = false;
+                            sileroAudioChunks = [];  // Clear any residual audio
+                            console.log('AI audio ended - resuming VAD (buffer cleared, echo delay applied)');
+                            if (isVadActive) {
+                                showStatus('🎧 Listening for speech...', 'listening');
+                            }
+                        }, 300);  // 300ms delay for echo to fade
                     };
                     
                     // Also handle if audio is paused or errors
@@ -2822,8 +2899,12 @@
                 
                 sileroRecorder.ondataavailable = (event) => {
                     if (event.data.size > 0) {
-                        // Always add to audio chunks - we'll use all of them
-                        // This ensures the WebM container is always valid
+                        // IMPORTANT: Don't record while AI is speaking to prevent echo/feedback
+                        // The AI's voice would otherwise be captured and transcribed
+                        if (isAISpeaking) {
+                            // Discard this chunk - it contains AI speech, not user speech
+                            return;
+                        }
                         sileroAudioChunks.push(event.data);
                     }
                 };
@@ -3132,6 +3213,438 @@
             }
         }
 
+        // ========== OUTPUT QUEUE PLAYER ==========
+        // Handles chunked TTS playback with interjection support
+        
+        const OutputQueuePlayer = {
+            isPlaying: false,
+            isPaused: false,
+            currentChunkId: null,
+            sessionId: null,
+            pendingResume: false,  // Flag to resume queue after short interjection
+
+            // Queue text for chunked playback
+            async queueAndPlay(text, sessionId = null) {
+                this.sessionId = sessionId || Date.now().toString();
+                
+                try {
+                    // Queue the text on the server (will be chunked automatically)
+                    const response = await fetch('/api/output/queue', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text, session_id: this.sessionId })
+                    });
+                    
+                    const data = await response.json();
+                    if (!data.success) {
+                        console.error('[OutputQueue] Failed to queue:', data.error);
+                        return false;
+                    }
+                    
+                    console.log(`[OutputQueue] Queued ${data.total_chunks} chunks`);
+                    
+                    // Start playing from the first chunk
+                    if (data.first_chunk) {
+                        this.isPlaying = true;
+                        await this.playChunk(data.first_chunk);
+                    }
+                    
+                    return true;
+                } catch (e) {
+                    console.error('[OutputQueue] Queue error:', e);
+                    return false;
+                }
+            },
+            
+            // Configuration for interjection detection
+            listeningWindowMs: 600,  // Time to listen between chunks
+            interjectionThreshold: 0.5,  // VAD speech probability threshold
+            
+            // Play a single chunk
+            async playChunk(chunk) {
+                if (!chunk || !chunk.text) {
+                    this.isPlaying = false;
+                    console.log('[OutputQueue] No chunk to play, queue complete');
+                    return;
+                }
+                
+                this.currentChunkId = chunk.id;
+                console.log(`[OutputQueue] Playing chunk ${chunk.sequence}: "${chunk.text.substring(0, 50)}..."`);
+                
+                try {
+                    // Synthesize and play this chunk
+                    const synthConfig = currentApiConfig?.synthesis;
+                    
+                    if (synthConfig?.provider === 'browser') {
+                        await synthesizeWithWebSpeech(chunk.text);
+                    } else if (synthConfig?.provider === 'edge_tts' || 
+                               synthConfig?.provider === 'openai_tts' || 
+                               synthConfig?.provider === 'chatterbox') {
+                        await synthesizeWithServer(chunk.text);
+                    } else {
+                        await synthesizeWithWebSpeech(chunk.text);
+                    }
+                    
+                    // Mark chunk as completed
+                    await this.markComplete(chunk.id);
+                    
+                    // If not interrupted, check for user speech before next chunk
+                    if (this.isPlaying && !this.isPaused) {
+                        const nextChunk = await this.getNextChunk();
+                        if (nextChunk) {
+                            // === LISTENING WINDOW ===
+                            // Brief pause between chunks to allow user interjection
+                            console.log(`[OutputQueue] Listening window (${this.listeningWindowMs}ms)...`);
+                            showStatus('🎧 ...', 'listening');
+                            
+                            const interjected = await this.checkForInterjection();
+                            
+                            if (interjected) {
+                                console.log('[OutputQueue] User interjected, stopping queue playback');
+                                return;  // Stop - interjection handler will take over
+                            }
+                            
+                            // No interjection, continue with next chunk
+                            showStatus('🔊 Speaking...', 'speaking');
+                            await this.playChunk(nextChunk);
+                        } else {
+                            this.isPlaying = false;
+                            console.log('[OutputQueue] Queue playback complete');
+                        }
+                    }
+                } catch (e) {
+                    console.error('[OutputQueue] Playback error:', e);
+                    this.isPlaying = false;
+                }
+            },
+            
+            // Check for user interjection during listening window
+            async checkForInterjection() {
+                return new Promise((resolve) => {
+                    let speechDetected = false;
+                    let speechStartTime = null;
+                    const checkInterval = 50;  // Check every 50ms
+                    let elapsed = 0;
+                    
+                    // Reset sileroWasSpeaking so VAD state transitions are detected fresh
+                    const previousWasSpeaking = sileroWasSpeaking;
+                    sileroWasSpeaking = false;
+                    
+                    // We'll create a fresh recorder for the interjection to get a valid WebM container
+                    let interjectionRecorder = null;
+                    let interjectionChunks = [];
+                    let recorderStarted = false;
+                    
+                    const checkLoop = setInterval(() => {
+                        elapsed += checkInterval;
+                        
+                        // Check if Silero VAD detected speech (ww_isSpeechActive is set by OpenWakeWord/Silero)
+                        const isSpeaking = typeof ww_isSpeechActive !== 'undefined' && ww_isSpeechActive;
+                        
+                        if (isSpeaking && !speechDetected) {
+                            speechDetected = true;
+                            speechStartTime = Date.now();
+                            console.log('[OutputQueue] 🎤 Speech detected during listening window!');
+                            
+                            // Visual feedback that we heard them
+                            showStatus('🎤 I hear you...', 'listening');
+                            
+                            // Start a fresh recorder for this interjection
+                            if (wakeWordStream && !recorderStarted) {
+                                try {
+                                    interjectionRecorder = new MediaRecorder(wakeWordStream, { mimeType: 'audio/webm' });
+                                    interjectionRecorder.ondataavailable = (e) => {
+                                        if (e.data.size > 0) {
+                                            interjectionChunks.push(e.data);
+                                        }
+                                    };
+                                    interjectionRecorder.start(100);
+                                    recorderStarted = true;
+                                    console.log('[OutputQueue] Started fresh recorder for interjection');
+                                } catch (e) {
+                                    console.warn('[OutputQueue] Could not start interjection recorder:', e);
+                                }
+                            }
+                        }
+                        
+                        // If speech was detected, give user time to finish their utterance
+                        if (speechDetected) {
+                            // Wait for speech to end, or max 3 seconds
+                            if (!isSpeaking || (Date.now() - speechStartTime > 3000)) {
+                                clearInterval(checkLoop);
+                                
+                                // Stop recorder and process the audio
+                                if (interjectionRecorder && interjectionRecorder.state === 'recording') {
+                                    interjectionRecorder.onstop = async () => {
+                                        if (interjectionChunks.length > 0) {
+                                            console.log(`[OutputQueue] Processing ${interjectionChunks.length} interjection chunks`);
+                                            const audioBlob = new Blob(interjectionChunks, { type: 'audio/webm' });
+                                            await this.processInterjectionAudioBlob(audioBlob);
+                                        } else {
+                                            console.log('[OutputQueue] No interjection audio captured');
+                                        }
+                                        resolve(true);
+                                    };
+                                    
+                                    // Small delay before stopping to capture final audio
+                                    setTimeout(() => {
+                                        interjectionRecorder.stop();
+                                    }, 200);
+                                } else {
+                                    console.log('[OutputQueue] No recorder to stop');
+                                    resolve(true);
+                                }
+                                return;
+                            }
+                        }
+                        
+                        // Listening window expired without speech
+                        if (elapsed >= this.listeningWindowMs && !speechDetected) {
+                            clearInterval(checkLoop);
+                            sileroWasSpeaking = previousWasSpeaking;  // Restore state
+                            
+                            // Clean up recorder if started but no speech
+                            if (interjectionRecorder && interjectionRecorder.state === 'recording') {
+                                interjectionRecorder.stop();
+                            }
+                            
+                            resolve(false);  // No interjection
+                        }
+                    }, checkInterval);
+                });
+            },
+            
+            // Process audio blob captured during interjection
+            async processInterjectionAudioBlob(audioBlob) {
+                if (!audioBlob || audioBlob.size === 0) {
+                    console.log('[OutputQueue] No audio blob to process');
+                    await this.resumeAfterInterjection();
+                    return;
+                }
+                
+                console.log(`[OutputQueue] Processing interjection audio (${audioBlob.size} bytes)...`);
+                
+                // Mark queue as not playing while we process interjection
+                this.isPlaying = false;
+                
+                // Transcribe the interjection
+                try {
+                    showStatus('🎤 Transcribing...', 'processing');
+                    
+                    const formData = new FormData();
+                    formData.append('audio', new File([audioBlob], 'interjection.webm', { type: 'audio/webm' }));
+                    
+                    const response = await fetch('/api/transcribe', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    if (data.success && data.transcription) {
+                        const transcript = data.transcription.trim();
+                        console.log(`[OutputQueue] Interjection transcribed: "${transcript}"`);
+                        
+                        if (transcript.length > 0) {
+                            // Classify the interjection
+                            const classifyResponse = await fetch('/api/interjection/classify', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ transcript })
+                            });
+                            
+                            const classifyData = await classifyResponse.json();
+                            console.log(`[OutputQueue] Interjection classified as: ${classifyData.classification}`);
+                            
+                            if (classifyData.should_abandon) {
+                                // Long interjection - abandon queue and save to thoughts
+                                console.log('[OutputQueue] Abandoning queue for new topic');
+                                await this.interrupt(transcript.substring(0, 50));
+                                
+                                // Process as a new conversation turn
+                                showStatus('🧠 Processing...', 'processing');
+                                isProcessing = true;
+                                await processAudioBlob(audioBlob);
+                            } else {
+                                // Short interjection - acknowledge and resume queue
+                                console.log('[OutputQueue] Short interjection, will resume after response');
+                                
+                                // Add to conversation and get a brief response
+                                conversationHistory.push({ role: 'user', content: transcript });
+                                
+                                // Get a brief acknowledgment (deterministic if possible)
+                                showStatus('🧠 Processing...', 'processing');
+                                isProcessing = true;
+                                await processAudioBlob(audioBlob);
+                                
+                                // After processing, resume the queue
+                                this.pendingResume = true;
+                            }
+                        } else {
+                            // Empty transcription - resume queue
+                            console.log('[OutputQueue] Empty transcription, resuming queue');
+                            await this.resumeAfterInterjection();
+                        }
+                    } else {
+                        // Transcription failed - resume queue
+                        console.log('[OutputQueue] Transcription failed, resuming queue');
+                        await this.resumeAfterInterjection();
+                    }
+                } catch (e) {
+                    console.error('[OutputQueue] Error processing interjection audio:', e);
+                    await this.resumeAfterInterjection();
+                }
+            },
+            
+            // Resume queue playback after a short interjection
+            async resumeAfterInterjection() {
+                console.log('[OutputQueue] Resuming queue after interjection...');
+                showStatus('🔊 Continuing...', 'speaking');
+                
+                const nextChunk = await this.getNextChunk();
+                if (nextChunk) {
+                    this.isPlaying = true;
+                    await this.playChunk(nextChunk);
+                } else {
+                    console.log('[OutputQueue] No more chunks to play');
+                    this.isPlaying = false;
+                }
+            },
+            
+            // Get next chunk from server
+            async getNextChunk() {
+                try {
+                    const response = await fetch('/api/output/next');
+                    const data = await response.json();
+                    
+                    if (data.success && data.has_more && data.chunk) {
+                        return data.chunk;
+                    }
+                    return null;
+                } catch (e) {
+                    console.error('[OutputQueue] Get next chunk error:', e);
+                    return null;
+                }
+            },
+            
+            // Mark chunk as completed
+            async markComplete(chunkId) {
+                try {
+                    await fetch(`/api/output/complete/${chunkId}`, { method: 'POST' });
+                } catch (e) {
+                    console.error('[OutputQueue] Mark complete error:', e);
+                }
+            },
+            
+            // Handle user interjection during playback
+            async handleInterjection(transcript) {
+                if (!this.isPlaying) return null;
+                
+                try {
+                    // Classify the interjection
+                    const response = await fetch('/api/interjection/classify', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ transcript })
+                    });
+                    
+                    const data = await response.json();
+                    console.log(`[OutputQueue] Interjection classified as: ${data.classification}`);
+                    
+                    if (data.should_abandon) {
+                        // Long interjection - abandon queue and save to thoughts
+                        await this.interrupt();
+                        return 'abandoned';
+                    } else {
+                        // Short interjection - pause queue
+                        this.pause();
+                        return 'paused';
+                    }
+                } catch (e) {
+                    console.error('[OutputQueue] Handle interjection error:', e);
+                    return null;
+                }
+            },
+            
+            // Pause playback (for short interjections)
+            pause() {
+                this.isPaused = true;
+                console.log('[OutputQueue] Playback paused');
+            },
+            
+            // Resume playback after short interjection response
+            async resume() {
+                if (!this.isPaused) return;
+                
+                this.isPaused = false;
+                console.log('[OutputQueue] Resuming playback');
+                
+                // Get and play next chunk
+                const nextChunk = await this.getNextChunk();
+                if (nextChunk) {
+                    await this.playChunk(nextChunk);
+                } else {
+                    this.isPlaying = false;
+                }
+            },
+            
+            // Interrupt playback and save remaining to thoughts
+            async interrupt(topic = null) {
+                this.isPlaying = false;
+                this.isPaused = false;
+                
+                try {
+                    const response = await fetch('/api/output/interrupt', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ topic })
+                    });
+                    
+                    const data = await response.json();
+                    console.log(`[OutputQueue] Interrupted, saved to thoughts: ${data.saved_to_thoughts}`);
+                    return data.thought_id;
+                } catch (e) {
+                    console.error('[OutputQueue] Interrupt error:', e);
+                    return null;
+                }
+            },
+            
+            // Check if there are pending thoughts
+            async hasPendingThoughts() {
+                try {
+                    const response = await fetch('/api/thoughts');
+                    const data = await response.json();
+                    return data.has_pending || false;
+                } catch (e) {
+                    return false;
+                }
+            },
+            
+            // Get queue status
+            async getStatus() {
+                try {
+                    const response = await fetch('/api/output/status');
+                    return await response.json();
+                } catch (e) {
+                    return { pending: 0, has_pending: false };
+                }
+            },
+            
+            // Clear the queue
+            async clear() {
+                this.isPlaying = false;
+                this.isPaused = false;
+                
+                try {
+                    await fetch('/api/output/clear', { method: 'POST' });
+                } catch (e) {
+                    console.error('[OutputQueue] Clear error:', e);
+                }
+            }
+        };
+        
+        // Make OutputQueuePlayer globally accessible
+        window.OutputQueuePlayer = OutputQueuePlayer;
+
         // ========== AUDIO PROCESSING ==========
         
         async function processAudioBlob(blob) {
@@ -3247,14 +3760,14 @@
                 // Step 2: Text inference via server
                 showStatus('🤔 Thinking...', 'processing');
                 
-                // Start filler chain based on expected wait time
+                // Always play an earcon when inference starts
+                playFileEarcon('thinking');
+                
+                // Start filler chain for longer expected waits
                 const expectedInferenceMs = currentTiming.inference_ms || 2000;
                 if (expectedInferenceMs > 1500) {
-                    // Start a chain of fillers to fill the wait naturally
-                    startFillerChain(expectedInferenceMs);
-                } else if (expectedInferenceMs > 800) {
-                    // Short wait - just play thinking earcon
-                    playFileEarcon('thinking');
+                    // Start a chain of fillers after initial earcon to fill the wait naturally
+                    setTimeout(() => startFillerChain(expectedInferenceMs - 500), 500);
                 }
                 
                 currentAbortController = new AbortController();
@@ -3333,7 +3846,15 @@
                 playFileEarcon('speaking');
                 
                 const synthConfig = currentApiConfig?.synthesis;
-                if (synthConfig?.provider === 'browser') {
+                const CHUNK_THRESHOLD = 300;  // Use chunked playback for responses > 300 chars
+                
+                // For long responses, use chunked queue-based playback
+                // This allows for natural pauses and user interjection
+                if (aiResponse.length > CHUNK_THRESHOLD && synthConfig?.provider !== 'browser') {
+                    console.log(`[Groklexa] Long response (${aiResponse.length} chars), using chunked playback`);
+                    showStatus('🔊 Speaking...', 'speaking');
+                    await OutputQueuePlayer.queueAndPlay(aiResponse);
+                } else if (synthConfig?.provider === 'browser') {
                     console.log('[Groklexa] Using browser speech synthesis');
                     showStatus('🔊 Speaking...', 'speaking');
                     await synthesizeWithWebSpeech(aiResponse);
@@ -3362,7 +3883,15 @@
             } finally {
                 currentAbortController = null;
                 isProcessing = false;
-                if (wakeWordState === 'active') {
+                
+                // Check if we need to resume queue playback after a short interjection
+                if (OutputQueuePlayer.pendingResume) {
+                    OutputQueuePlayer.pendingResume = false;
+                    console.log('[OutputQueue] Resuming queue after short interjection response');
+                    // Brief pause before resuming
+                    await new Promise(r => setTimeout(r, 500));
+                    await OutputQueuePlayer.resumeAfterInterjection();
+                } else if (wakeWordState === 'active') {
                     showStatus('🎧 Listening for speech...', 'listening');
                 }
             }
@@ -3564,20 +4093,24 @@
                     
                     // Pause VAD while playing
                     isAISpeaking = true;
+                    sileroAudioChunks = [];  // Clear buffer BEFORE playback
                     stopBrowserTranscription();
-                    console.log('[Groklexa] Server audio playing - pausing VAD & transcription');
-                    
+                    console.log('[Groklexa] Server audio playing - pausing VAD & transcription, buffer cleared');
+
                     audio.onended = () => {
-                        isAISpeaking = false;
-                        browserTranscriptBuffer = '';
-                        sileroAudioChunks = [];  // Clear any AI speech captured by recorder
-                        if (wakeWordState === 'active' && currentApiConfig?.mode === 'separate' && 
-                            currentApiConfig?.transcription?.provider === 'browser') {
-                            startBrowserTranscription();
-                        }
-                        console.log('[Groklexa] Server audio complete - resuming VAD & transcription (buffer cleared)');
-                        // Don't revoke URL - keep it for the sidebar player
-                        resolve();
+                        // Small delay to allow any echo/reverb to dissipate
+                        setTimeout(() => {
+                            isAISpeaking = false;
+                            browserTranscriptBuffer = '';
+                            sileroAudioChunks = [];  // Clear any residual audio
+                            if (wakeWordState === 'active' && currentApiConfig?.mode === 'separate' &&
+                                currentApiConfig?.transcription?.provider === 'browser') {
+                                startBrowserTranscription();
+                            }
+                            console.log('[Groklexa] Server audio complete - resuming VAD & transcription (echo delay applied)');
+                            // Don't revoke URL - keep it for the sidebar player
+                            resolve();
+                        }, 300);  // 300ms delay for echo to fade
                     };
                     
                     audio.onerror = (e) => {
@@ -3637,19 +4170,24 @@
                 utterance.onstart = () => {
                     // Pause VAD and browser transcription while speaking
                     isAISpeaking = true;
+                    sileroAudioChunks = [];  // Clear buffer BEFORE synthesis
                     stopBrowserTranscription();  // Stop transcribing our own speech
-                    console.log('[Groklexa] Browser synthesis started - pausing VAD & transcription');
+                    console.log('[Groklexa] Browser synthesis started - pausing VAD & transcription, buffer cleared');
                 };
-                
+
                 utterance.onend = () => {
-                    isAISpeaking = false;
-                    sileroAudioChunks = [];  // Clear any AI speech captured by recorder
-                    // Resume browser transcription with clean buffer
-                    browserTranscriptBuffer = '';
-                    if (wakeWordState === 'active' && currentApiConfig?.mode === 'separate' && 
-                        currentApiConfig?.transcription?.provider === 'browser') {
-                        startBrowserTranscription();
-                    }
+                    // Small delay to allow any echo/reverb to dissipate
+                    setTimeout(() => {
+                        isAISpeaking = false;
+                        sileroAudioChunks = [];  // Clear any residual audio
+                        // Resume browser transcription with clean buffer
+                        browserTranscriptBuffer = '';
+                        if (wakeWordState === 'active' && currentApiConfig?.mode === 'separate' &&
+                            currentApiConfig?.transcription?.provider === 'browser') {
+                            startBrowserTranscription();
+                        }
+                        console.log('[Groklexa] Browser synthesis ended - echo delay applied');
+                    }, 300);  // 300ms delay for echo to fade
                     console.log('[Groklexa] Speech synthesis complete - resuming VAD & transcription (buffer cleared)');
                     resolve();
                 };
@@ -3712,6 +4250,7 @@
         const toolEscalate = document.getElementById('toolEscalate');
         const toolSearchX = document.getElementById('toolSearchX');
         const toolSearchWeb = document.getElementById('toolSearchWeb');
+        const toolUTH = document.getElementById('toolUTH');
         
         let currentPersonaId = 'default';
         
@@ -3856,10 +4395,19 @@
                     search_web: toolSearchWeb.checked
                 };
                 
+                // Universal Tool Handler config
+                const universal_tool_handler = {
+                    enabled: toolUTH.checked,
+                    provider: 'xai',
+                    url: 'https://api.x.ai/v1/chat/completions',
+                    auth: '',  // Uses escalation auth or env var
+                    model: 'grok-3-fast'
+                };
+
                 const response = await fetch(`/api/personas/${currentPersonaId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tools })
+                    body: JSON.stringify({ tools, universal_tool_handler })
                 });
                 
                 const data = await response.json();
@@ -4113,32 +4661,52 @@
         
         async function updateInferenceModels() {
             const provider = inferenceProvider.value;
-            
+            const detectedModelSpan = document.getElementById('inferenceDetectedModel');
+
             // Show custom model input for custom provider
             if (provider === 'custom') {
                 inferenceModel.style.display = 'none';
+                if (detectedModelSpan) detectedModelSpan.style.display = 'none';
                 return;
             }
-            
+
             inferenceModel.style.display = 'block';
             inferenceModel.innerHTML = '<option value="">Loading models...</option>';
-            
+
             // Show/hide URL for local providers (usually localhost)
             if (provider === 'ollama') {
                 document.getElementById('inferenceUrl').value = 'http://localhost:11434/v1/chat/completions';
             } else if (provider === 'llama_cpp') {
                 document.getElementById('inferenceUrl').value = 'http://localhost:8080/v1/chat/completions';
             }
-            
+
             try {
                 const response = await fetch(`/api/models/${provider}`);
                 const data = await response.json();
-                
+
                 if (data.success && data.models && data.models.length > 0) {
                     inferenceModel.innerHTML = data.models
                         .map(m => `<option value="${m.id}">${m.name}</option>`)
                         .join('');
                     console.log(`[Groklexa] Loaded ${data.models.length} models for ${provider}`);
+                    
+                    // Show multi-model indicator for llama.cpp
+                    if (provider === 'llama_cpp' && detectedModelSpan) {
+                        const isMultiModel = data.models.some(m => m.multi_model);
+                        if (isMultiModel) {
+                            detectedModelSpan.textContent = `🔀 ${data.models.length} models loaded`;
+                            detectedModelSpan.style.display = 'inline';
+                            detectedModelSpan.title = 'llama.cpp running in multi-model mode';
+                        } else if (data.models.length === 1) {
+                            detectedModelSpan.textContent = `📦 ${data.models[0].id}`;
+                            detectedModelSpan.style.display = 'inline';
+                            detectedModelSpan.title = 'llama.cpp running in single-model mode';
+                        } else {
+                            detectedModelSpan.style.display = 'none';
+                        }
+                    } else if (detectedModelSpan) {
+                        detectedModelSpan.style.display = 'none';
+                    }
                 } else {
                     // Use fallback
                     const fallback = FALLBACK_MODELS[provider] || [];
@@ -4149,6 +4717,7 @@
                         inferenceModel.innerHTML = '<option value="">No models available</option>';
                     }
                     console.log(`[Groklexa] Using fallback models for ${provider}`);
+                    if (detectedModelSpan) detectedModelSpan.style.display = 'none';
                 }
             } catch (e) {
                 console.error(`[Groklexa] Failed to fetch models for ${provider}:`, e);
@@ -4156,6 +4725,7 @@
                 inferenceModel.innerHTML = fallback
                     .map(m => `<option value="${m.id}">${m.name}</option>`)
                     .join('');
+                if (detectedModelSpan) detectedModelSpan.style.display = 'none';
             }
             
             // Restore pending model value if set
@@ -4284,6 +4854,14 @@
                         console.log('[Groklexa] Loaded tool permissions:', config.tools);
                     }
                     
+                    // Load Universal Tool Handler config
+                    if (config.universal_tool_handler) {
+                        toolUTH.checked = config.universal_tool_handler.enabled === true;
+                        console.log('[Groklexa] Loaded UTH config:', config.universal_tool_handler);
+                    } else {
+                        toolUTH.checked = false;
+                    }
+                    
                     // Set mode
                     if (config.mode === 'separate') {
                         apiModeSeparate.checked = true;
@@ -4340,6 +4918,15 @@
                                 console.log(`[Groklexa] Pending synthesis voice: ${config[section].voice}`);
                             }
                             
+                            // Set whisper model size for transcription
+                            if (section === 'transcription' && config[section].model_size) {
+                                const whisperModelEl = document.getElementById('whisperModelSize');
+                                if (whisperModelEl) {
+                                    whisperModelEl.value = config[section].model_size;
+                                    console.log(`[Groklexa] Loaded whisper model size: ${config[section].model_size}`);
+                                }
+                            }
+                            
                             // Trigger provider change to update visibility and voices
                             if (providerEl) {
                                 providerEl.dispatchEvent(new Event('change'));
@@ -4378,7 +4965,8 @@
                     provider: document.getElementById('transcriptionProvider').value,
                     url: document.getElementById('transcriptionUrl').value,
                     auth: document.getElementById('transcriptionAuth').value,
-                    protocol: document.getElementById('transcriptionProvider').value
+                    protocol: document.getElementById('transcriptionProvider').value,
+                    model_size: document.getElementById('whisperModelSize').value
                 },
                 inference: {
                     provider: document.getElementById('inferenceProvider').value,

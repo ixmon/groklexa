@@ -16,7 +16,7 @@ import requests
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from groklexa import XAIVoiceWebSocketWrapper
-from lib.memory_flair import MemoryFlair, EscalationPlan
+from lib.memory_flair import MemoryFlair, EscalationPlan, truncate_for_speech
 
 # Configure logging
 logging.basicConfig(
@@ -152,7 +152,7 @@ def get_memory_flair(persona_name: str, persona_config: dict = None) -> MemoryFl
             logger.info(f"Creating MemoryFlair for persona '{persona_name}' with style '{buffer_style}'")
             _memory_flair_instances[persona_name] = MemoryFlair(
                 db_path=db_path,
-                persona=buffer_style
+                persona=persona_name  # Use actual persona name, not buffer_style
             )
         
         return _memory_flair_instances[persona_name]
@@ -1071,12 +1071,51 @@ def transcribe_with_local_whisper(audio_path: str) -> str:
     try:
         # OpenAI whisper returns a dict with 'text' key
         t2 = time.time()
-        result = model.transcribe(audio_path, language="en")
+        
+        # Anti-hallucination parameters:
+        # - condition_on_previous_text=False: Prevents repetitive/runaway hallucinations
+        # - no_speech_threshold=0.6: Higher = more aggressive silence detection (default 0.6)
+        # - logprob_threshold=-1.0: Filter low-confidence outputs (default -1.0)
+        # - compression_ratio_threshold=2.4: Detect repetitive hallucinated content (default 2.4)
+        result = model.transcribe(
+            audio_path,
+            language="en",
+            condition_on_previous_text=False,  # Critical: prevents hallucination chains
+            no_speech_threshold=0.5,           # Slightly lower to catch more silence
+            logprob_threshold=-0.5,            # Filter very low confidence (default -1.0)
+            compression_ratio_threshold=2.0,   # Catch repetitive hallucinations (default 2.4)
+        )
         t3 = time.time()
         
-        transcript = result.get("text", "")
-        logger.info(f"Local Whisper transcription ({(t3-t2)*1000:.0f}ms): {transcript[:100]}...")
-        return transcript.strip()
+        # Check for likely hallucination indicators
+        transcript = result.get("text", "").strip()
+        no_speech_prob = result.get("no_speech_prob", 0)
+        
+        # If Whisper thinks there's no speech, return empty
+        if no_speech_prob > 0.7:
+            logger.info(f"Local Whisper: No speech detected (prob={no_speech_prob:.2f})")
+            return ""
+        
+        # Filter out common Whisper hallucination patterns
+        hallucination_patterns = [
+            r"^\.+$",                    # Just periods
+            r"^[\s\.,!?]+$",             # Just punctuation
+            r"thank you for watching",   # Common hallucination
+            r"please subscribe",         # Common hallucination
+            r"see you next time",        # Common hallucination
+            r"^\[.*\]$",                 # Just bracketed content like [Music]
+            r"^♪.*♪$",                   # Music notes
+        ]
+        
+        import re
+        transcript_lower = transcript.lower()
+        for pattern in hallucination_patterns:
+            if re.match(pattern, transcript_lower, re.IGNORECASE):
+                logger.info(f"Local Whisper: Filtered hallucination pattern: {transcript[:50]}")
+                return ""
+        
+        logger.info(f"Local Whisper transcription ({(t3-t2)*1000:.0f}ms, no_speech={no_speech_prob:.2f}): {transcript[:100]}...")
+        return transcript
     except Exception as e:
         logger.error(f"Local Whisper transcription error: {e}")
         raise
@@ -1299,8 +1338,8 @@ def fetch_ollama_models(url: str) -> list:
 def fetch_llamacpp_models(base_url: str) -> list:
     """Fetch models from llama.cpp server.
     
-    llama.cpp server loads one model at a time, so we query the /props or /models endpoint
-    to get the currently loaded model.
+    Supports both single-model and multi-model mode. In multi-model mode,
+    models are identified by their aliases (e.g., 'chit-chat', 'deep').
     """
     try:
         # Try the OpenAI-compatible /v1/models endpoint first
@@ -1308,32 +1347,56 @@ def fetch_llamacpp_models(base_url: str) -> list:
         if response.status_code == 200:
             data = response.json()
             models = []
+            
+            # Get models from OpenAI-compatible 'data' array
             for model in data.get('data', []):
                 model_id = model.get('id', 'unknown')
+                
+                # Try to get additional info for display name
+                meta = model.get('meta', {})
+                n_params = meta.get('n_params', 0)
+                
+                # Format display name with size hint if available
+                if n_params > 0:
+                    size_b = n_params / 1e9
+                    display_name = f"{model_id} ({size_b:.1f}B params)"
+                else:
+                    display_name = model_id
+                
                 models.append({
                     'id': model_id,
-                    'name': model_id
+                    'name': display_name,
+                    'alias': model_id
                 })
+            
             if models:
-                logger.info(f"Fetched {len(models)} models from llama.cpp")
+                # Indicate multi-model mode
+                is_multi = len(models) > 1
+                mode_str = "multi-model" if is_multi else "single-model"
+                logger.info(f"Fetched {len(models)} models from llama.cpp ({mode_str} mode)")
+                
+                # Add metadata about multi-model status
+                for m in models:
+                    m['multi_model'] = is_multi
+                
                 return models
         
-        # Fallback: try /props endpoint
+        # Fallback: try /props endpoint (older llama.cpp versions)
         response = requests.get(f"{base_url}/props", timeout=5)
         if response.status_code == 200:
             data = response.json()
             model_name = data.get('model', 'llama-model')
             logger.info(f"Fetched model from llama.cpp /props: {model_name}")
-            return [{'id': model_name, 'name': model_name}]
+            return [{'id': model_name, 'name': model_name, 'multi_model': False}]
         
         # If server is running but no model info, return generic option
         logger.warning("llama.cpp server running but couldn't get model info")
-        return [{'id': 'default', 'name': 'Loaded Model (default)'}]
+        return [{'id': 'default', 'name': 'Loaded Model (default)', 'multi_model': False}]
         
     except Exception as e:
         logger.warning(f"Failed to fetch llama.cpp models (is llama-server running?): {e}")
         # Return default option so user can still select llama.cpp
-        return [{'id': 'default', 'name': 'Loaded Model (default)'}]
+        return [{'id': 'default', 'name': 'Loaded Model (default)', 'multi_model': False}]
 
 
 @app.route('/api/voices/<provider>')
@@ -1764,8 +1827,16 @@ def infer_text():
         t_infer_start = time.time()
         
         if protocol in openai_compatible_protocols:
-            # Pass persona's tool permissions to the API call
-            response_text = call_openai_compatible(url, auth, model, messages, tool_permissions=tool_permissions)
+            # Pass persona's tool permissions and UTH config to the API call
+            uth_config = persona.get('universal_tool_handler', {})
+            response_text = call_openai_compatible(
+                url, auth, model, messages, 
+                tool_permissions=tool_permissions,
+                uth_config=uth_config,
+                persona_config=persona,
+                persona_name=persona_name,
+                original_query=text
+            )
         elif protocol in ['anthropic_messages', 'anthropic']:
             response_text = call_anthropic(url, auth, model, messages)
         elif protocol == 'browser_speech_api':
@@ -1773,13 +1844,29 @@ def infer_text():
             return jsonify({'error': 'Browser Speech API should be used client-side'}), 400
         else:
             logger.warning(f"Unknown protocol '{protocol}', trying OpenAI-compatible")
-            response_text = call_openai_compatible(url, auth, model, messages)
+            uth_config = persona.get('universal_tool_handler', {})
+            response_text = call_openai_compatible(
+                url, auth, model, messages,
+                tool_permissions=tool_permissions,
+                uth_config=uth_config,
+                persona_config=persona,
+                persona_name=persona_name,
+                original_query=text
+            )
         
         # Record inference timing
         inference_ms = (time.time() - t_infer_start) * 1000
         record_timing('inference', inference_ms)
         
         logger.info(f"Inference response ({inference_ms:.0f}ms): {response_text[:100]}...")
+        
+        # Truncate long responses at natural break points for voice mode
+        # This prevents verbose models from rambling on too long
+        # TODO: Could modulate this dynamically based on context/urgency
+        original_length = len(response_text)
+        response_text, was_truncated = truncate_for_speech(response_text, target_chars=350, tolerance=75)
+        if was_truncated:
+            logger.info(f"Truncated response: {original_length} -> {len(response_text)} chars")
         
         # Get tool calls that were made during this inference
         tools_called = list(_current_inference_tools) if _current_inference_tools else []
@@ -1791,6 +1878,7 @@ def infer_text():
             'success': True,
             'response': response_text,
             'tools_called': tools_called,
+            'truncated': was_truncated,
             'memory_flair': {
                 'state': escalation_plan.state,
                 'tiers': escalation_plan.selected_tiers,
@@ -1817,10 +1905,27 @@ def infer_text():
 # Track tool calls for the current inference (for UI display)
 _current_inference_tools = []
 
-def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool_permissions: dict = None) -> str:
-    """Call an OpenAI-compatible API (Grok, OpenAI, Ollama, etc.) with tool support."""
+def call_openai_compatible(
+    url: str, 
+    auth: str, 
+    model: str, 
+    messages: list, 
+    tool_permissions: dict = None,
+    uth_config: dict = None,
+    persona_config: dict = None,
+    persona_name: str = None,
+    original_query: str = None
+) -> str:
+    """Call an OpenAI-compatible API (Grok, OpenAI, Ollama, etc.) with tool support.
+    
+    If uth_config is provided and enabled, tool calls will be intercepted and
+    routed to the Universal Tool Handler for processing by a more capable model.
+    """
     global _current_inference_tools
     _current_inference_tools = []  # Reset for this inference
+    
+    # Check if Universal Tool Handler is enabled
+    uth_enabled = uth_config and uth_config.get('enabled', False)
     
     logger.debug(f"Calling OpenAI-compatible API: {url}, model: {model}")
     
@@ -2100,6 +2205,25 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
                 return parsed_result
             return content
         
+        # =====================================================================
+        # UNIVERSAL TOOL HANDLER INTERCEPTION
+        # If enabled, route tool calls to a more capable model (xAI)
+        # =====================================================================
+        if uth_enabled and iteration == 0:
+            logger.info(f"[UTH] Intercepting tool call from primary model")
+            uth_result = handle_with_universal_tool_handler(
+                original_query=original_query or messages[-1].get('content', ''),
+                messages=messages,
+                attempted_tool_calls=tool_calls,
+                tool_permissions=tool_permissions or {},
+                persona_config=persona_config or {},
+                persona_name=persona_name or 'default'
+            )
+            if uth_result:
+                return uth_result
+            # If UTH failed, fall through to let primary model handle it
+            logger.warning("[UTH] Handler failed, falling back to primary model")
+        
         tool_names = [tc['function']['name'] for tc in tool_calls]
         logger.info(f"Tool calls requested (iteration {iteration + 1}): {tool_names}")
         _current_inference_tools.extend(tool_names)
@@ -2144,6 +2268,239 @@ def call_openai_compatible(url: str, auth: str, model: str, messages: list, tool
             content = 'I was unable to complete the request after multiple tool calls.'
     
     return content
+
+
+# ============================================================================
+# UNIVERSAL TOOL HANDLER
+# ============================================================================
+
+def handle_with_universal_tool_handler(
+    original_query: str,
+    messages: list,
+    attempted_tool_calls: list,
+    tool_permissions: dict,
+    persona_config: dict,
+    persona_name: str
+) -> str:
+    """
+    Handle tool calls using a more capable model (xAI API).
+    
+    This function intercepts tool call attempts from smaller/erratic models,
+    re-analyzes the context with xAI, executes the proper tool calls,
+    stores results for RAG, and returns a voice-friendly response.
+    
+    Args:
+        original_query: The user's original query
+        messages: Full message history
+        attempted_tool_calls: Tool calls the primary model tried to make
+        tool_permissions: Which tools are enabled for this persona
+        persona_config: Full persona configuration
+        persona_name: Persona identifier for RAG storage
+        
+    Returns:
+        Final formatted response string
+    """
+    global _current_inference_tools
+    
+    uth_config = persona_config.get('universal_tool_handler', {})
+    if not uth_config.get('enabled', False):
+        logger.warning("Universal Tool Handler called but not enabled")
+        return None
+    
+    # Get UTH API configuration
+    uth_url = uth_config.get('url', 'https://api.x.ai/v1/chat/completions')
+    uth_auth = uth_config.get('auth', '') or os.environ.get('XAI_API_KEY', '')
+    uth_model = uth_config.get('model', 'grok-3-fast')
+    
+    if not uth_auth:
+        # Try escalation auth as fallback
+        escalation = persona_config.get('escalation', {})
+        uth_auth = escalation.get('auth', '') or os.environ.get('XAI_API_KEY', '')
+    
+    if not uth_auth:
+        logger.error("Universal Tool Handler: No API key available")
+        return None
+    
+    logger.info(f"[UTH] Intercepting tool call with {uth_model}")
+    logger.info(f"[UTH] Original attempted tools: {[tc.get('function', {}).get('name') for tc in attempted_tool_calls]}")
+    
+    # Build the tool definitions (same as in call_openai_compatible)
+    all_tools = {
+        "get_current_datetime": {
+            "type": "function",
+            "function": {
+                "name": "get_current_datetime",
+                "description": "Get the current date and time.",
+                "parameters": {"type": "object", "properties": {"timezone": {"type": "string"}}}
+            }
+        },
+        "get_current_weather": {
+            "type": "function",
+            "function": {
+                "name": "get_current_weather",
+                "description": "Get current weather for a location.",
+                "parameters": {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]}
+            }
+        },
+        "search_x": {
+            "type": "function",
+            "function": {
+                "name": "search_x",
+                "description": "Search X (Twitter) for recent posts and discussions.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+            }
+        },
+        "search_web": {
+            "type": "function",
+            "function": {
+                "name": "search_web",
+                "description": "Search the web for information.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+            }
+        },
+        "get_system_info": {
+            "type": "function",
+            "function": {
+                "name": "get_system_info",
+                "description": "Get system information (CPU, memory, disk usage).",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        "set_timer": {
+            "type": "function",
+            "function": {
+                "name": "set_timer",
+                "description": "Set a countdown timer.",
+                "parameters": {"type": "object", "properties": {"duration": {"type": "string"}, "label": {"type": "string"}}, "required": ["duration"]}
+            }
+        },
+    }
+    
+    # Filter by permissions - enable all tools for UTH to properly handle
+    enabled_tools = [all_tools[name] for name in all_tools.keys() if tool_permissions.get(name, True)]
+    
+    # Build payload for UTH model
+    headers = {
+        'Authorization': f'Bearer {uth_auth}',
+        'Content-Type': 'application/json'
+    }
+    
+    # Add context about what we need - optimized for voice synthesis
+    uth_system_prompt = """You are a tool-calling assistant optimized for voice output.
+
+TOOL CALLING:
+- Analyze the user's request and call the appropriate tool
+- Be precise with parameters
+
+VOICE RESPONSE FORMAT:
+- Structure responses as 2-3 short, complete thoughts
+- Each thought should be 1-2 sentences that stand alone naturally
+- Expand abbreviations for clarity (say "United States" not "U.S.", "versus" not "vs.")
+- Use conversational phrasing, not lists or bullet points
+- Keep total response under 300 characters when possible
+- End with a complete thought, not mid-sentence
+
+After getting tool results, synthesize them into a natural, spoken response."""
+    
+    uth_messages = [{'role': 'system', 'content': uth_system_prompt}]
+    
+    # Add recent conversation history (last few turns)
+    for msg in messages[-6:]:  # Last 3 exchanges
+        if msg.get('role') in ['user', 'assistant']:
+            uth_messages.append({'role': msg['role'], 'content': msg.get('content', '')})
+    
+    payload = {
+        'model': uth_model,
+        'messages': uth_messages,
+        'tools': enabled_tools,
+        'tool_choice': 'auto'
+    }
+    
+    try:
+        t_start = time.time()
+        response = requests.post(uth_url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        message = data.get('choices', [{}])[0].get('message', {})
+        
+        tool_calls = message.get('tool_calls', [])
+        
+        if not tool_calls:
+            # No tool call needed - return content directly
+            content = message.get('content', '')
+            logger.info(f"[UTH] No tool call needed, response: {content[:100]}...")
+            return content
+        
+        # Execute tool calls
+        tool_names = [tc['function']['name'] for tc in tool_calls]
+        logger.info(f"[UTH] Executing tools: {tool_names}")
+        _current_inference_tools.extend(tool_names)
+        
+        # Add assistant message with tool calls
+        payload['messages'].append(message)
+        
+        tool_results = []
+        for tool_call in tool_calls:
+            function_name = tool_call['function']['name']
+            function_args = json.loads(tool_call['function']['arguments'])
+            tool_call_id = tool_call['id']
+            
+            try:
+                result = execute_tool(function_name, function_args, uth_auth)
+                tool_results.append({
+                    'tool': function_name,
+                    'args': function_args,
+                    'result': str(result)[:500]
+                })
+                logger.info(f"[UTH] Tool {function_name} result: {str(result)[:200]}...")
+            except Exception as e:
+                logger.error(f"[UTH] Tool {function_name} error: {e}")
+                result = f"Error: {str(e)}"
+            
+            payload['messages'].append({
+                'role': 'tool',
+                'tool_call_id': tool_call_id,
+                'content': str(result)
+            })
+        
+        # Get final response from UTH model
+        response = requests.post(uth_url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        final_message = data.get('choices', [{}])[0].get('message', {})
+        final_content = final_message.get('content', '')
+        
+        # Strip any thinking tags
+        final_content = strip_thinking_tags(final_content)
+        
+        t_elapsed = (time.time() - t_start) * 1000
+        logger.info(f"[UTH] Complete in {t_elapsed:.0f}ms: {final_content[:100]}...")
+        
+        # Store in RAG for future reference
+        try:
+            flair = get_memory_flair(persona_name, persona_config)
+            for tr in tool_results:
+                flair.store_tool_insight(
+                    query=original_query,
+                    tool_used=tr['tool'],
+                    tool_args=tr['args'],
+                    result_summary=tr['result'][:200],
+                    full_response=final_content
+                )
+            logger.info(f"[UTH] Stored {len(tool_results)} tool insights for RAG")
+        except Exception as e:
+            logger.warning(f"[UTH] Failed to store RAG insight: {e}")
+        
+        return final_content
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[UTH] API request failed: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"[UTH] Unexpected error: {e}", exc_info=True)
+        return None
 
 
 def try_parse_json_tool_call(content: str, auth: str) -> str:
@@ -2466,18 +2823,40 @@ def tool_get_current_weather(location: str) -> str:
         else:
             # Step 1b: Geocode via Open-Meteo API
             geocode_url = "https://geocoding-api.open-meteo.com/v1/search"
-            geocode_params = {
-                'name': location,
-                'count': 1,
-                'language': 'en',
-                'format': 'json'
-            }
             
-            geo_response = requests.get(geocode_url, params=geocode_params, timeout=10)
-            geo_response.raise_for_status()
-            geo_data = geo_response.json()
+            # Try different location formats since Open-Meteo doesn't handle "City, State" well
+            location_variants = [location]
             
-            if not geo_data.get('results'):
+            # If location contains comma (e.g., "Kitty Hawk, NC"), also try just the city name
+            if ',' in location:
+                city_only = location.split(',')[0].strip()
+                location_variants.append(city_only)
+            
+            # Also try replacing state abbreviation with full name
+            location_variants.append(location.replace(', NC', ' North Carolina'))
+            location_variants.append(location.replace(', CA', ' California'))
+            location_variants.append(location.replace(', NY', ' New York'))
+            location_variants.append(location.replace(', TX', ' Texas'))
+            location_variants.append(location.replace(', FL', ' Florida'))
+            
+            geo_data = None
+            for loc_variant in location_variants:
+                geocode_params = {
+                    'name': loc_variant,
+                    'count': 1,
+                    'language': 'en',
+                    'format': 'json'
+                }
+                
+                geo_response = requests.get(geocode_url, params=geocode_params, timeout=10)
+                geo_response.raise_for_status()
+                geo_data = geo_response.json()
+                
+                if geo_data.get('results'):
+                    logger.debug(f"Geocode succeeded with variant: '{loc_variant}'")
+                    break
+            
+            if not geo_data or not geo_data.get('results'):
                 return f"Location '{location}' not found. Try a different city name."
             
             place = geo_data['results'][0]
@@ -3289,7 +3668,9 @@ def tool_search_x(query: str, auth: str) -> str:
         
         if response and response.content:
             logger.info(f"X search result: {response.content[:200]}...")
-            return response.content
+            # Format for voice conversation
+            formatted = format_for_voice(response.content, query, xai_key)
+            return formatted
         else:
             return "No results found on X for this query."
             
@@ -3343,7 +3724,9 @@ def tool_search_web(query: str, auth: str) -> str:
         
         if response and response.content:
             logger.info(f"Web search result: {response.content[:200]}...")
-            return response.content
+            # Format for voice conversation
+            formatted = format_for_voice(response.content, query, xai_key)
+            return formatted
         else:
             return "No web results found for this query."
             
@@ -3353,6 +3736,93 @@ def tool_search_web(query: str, auth: str) -> str:
     except Exception as e:
         logger.error(f"Web search error: {e}", exc_info=True)
         return f"Web search error: {str(e)}"
+
+
+def format_for_voice(raw_content: str, query: str, auth: str) -> str:
+    """
+    Reformat search results for natural voice conversation.
+    
+    Takes raw search output (markdown, symbols, URLs) and converts it to
+    conversational speech suitable for TTS synthesis.
+    
+    Args:
+        raw_content: Raw search result text
+        query: Original search query (for context)
+        auth: xAI API key
+        
+    Returns:
+        Voice-friendly reformatted text
+    """
+    if not raw_content or len(raw_content) < 50:
+        return raw_content
+    
+    # Get persona context for style matching
+    config = load_config()
+    persona_id = config.get('active_persona', 'default')
+    persona = config.get('personas', {}).get(persona_id, {})
+    persona_prompt = persona.get('prompt', '')
+    
+    # Extract style hints from persona prompt
+    style_hints = ""
+    prompt_lower = persona_prompt.lower()
+    if 'flirty' in prompt_lower or 'playful' in prompt_lower:
+        style_hints = "Be conversational and fun. "
+    elif 'professional' in prompt_lower or 'formal' in prompt_lower:
+        style_hints = "Be clear and professional. "
+    elif 'snarky' in prompt_lower or 'sarcastic' in prompt_lower:
+        style_hints = "Add some wit if appropriate. "
+    else:
+        style_hints = "Be natural and conversational. "
+    
+    logger.info(f"Formatting search results for voice (input: {len(raw_content)} chars)")
+    
+    try:
+        from xai_sdk import Client
+        from xai_sdk.chat import user, system
+        
+        client = Client(api_key=auth)
+        
+        # Create a formatting chat session
+        chat = client.chat.create(model="grok-4-fast")
+        
+        formatting_prompt = f"""You are a voice assistant reformatting search results for spoken conversation.
+
+TASK: Take the search results below and reformat them for natural speech.
+
+RULES:
+1. {style_hints}
+2. NO markdown formatting (no #, *, **, -, bullet points)
+3. NO stock ticker symbols like $TSLA - say "Tesla" instead
+4. NO URLs or links
+5. NO hashtags - remove them or spell out the concept
+6. Keep it concise - summarize the key 3-5 points
+7. Use conversational transitions: "So basically...", "The main thing is...", "People are talking about..."
+8. Numbers should be spoken naturally: "about 500 likes" not "likes: 487"
+9. Aim for 2-3 short paragraphs, suitable for being read aloud
+10. Start with a brief intro like "So I searched X for [topic] and..."
+
+ORIGINAL SEARCH QUERY: {query}
+
+SEARCH RESULTS TO REFORMAT:
+{raw_content[:4000]}
+
+Reformat this for voice:"""
+
+        chat.append(user(formatting_prompt))
+        response = chat.sample()
+        
+        if response and response.content:
+            formatted = response.content.strip()
+            logger.info(f"Formatted for voice: {len(formatted)} chars (was {len(raw_content)})")
+            return formatted
+        else:
+            logger.warning("Voice formatting returned empty, using original")
+            return raw_content
+            
+    except Exception as e:
+        logger.error(f"Voice formatting error: {e}")
+        # Fall back to original content if formatting fails
+        return raw_content
 
 
 def call_anthropic(url: str, auth: str, model: str, messages: list) -> str:
@@ -3490,6 +3960,237 @@ def synthesize():
             'success': False,
             'error': str(e)
         }), 500
+
+
+# ========== OUTPUT QUEUE API ==========
+
+@app.route('/api/output/queue', methods=['POST'])
+def queue_output():
+    """Queue text for chunked TTS playback."""
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        text = data.get('text', '')
+        session_id = data.get('session_id')
+        
+        if not text:
+            return jsonify({'error': 'No text provided'}), 400
+        
+        # Get active persona's MemoryFlair instance
+        config = load_config()
+        persona_name = config.get('active_persona', 'default')
+        persona_config = get_active_persona(config)
+        
+        flair = get_memory_flair(persona_name, persona_config)
+        
+        # Queue the text (will be chunked automatically)
+        chunk_ids = flair.queue_output(text, session_id)
+        
+        # Get the first chunk to return immediately
+        first_chunk = flair.pop_next_chunk()
+        
+        return jsonify({
+            'success': True,
+            'chunk_ids': chunk_ids,
+            'total_chunks': len(chunk_ids),
+            'first_chunk': first_chunk
+        })
+        
+    except Exception as e:
+        logger.error(f"Queue output error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/output/next', methods=['GET'])
+def get_next_chunk():
+    """Get the next chunk to synthesize and play."""
+    try:
+        config = load_config()
+        persona_name = config.get('active_persona', 'default')
+        persona_config = get_active_persona(config)
+        
+        flair = get_memory_flair(persona_name, persona_config)
+        chunk = flair.pop_next_chunk()
+        
+        if chunk:
+            return jsonify({
+                'success': True,
+                'has_more': True,
+                'chunk': chunk
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'has_more': False,
+                'chunk': None
+            })
+            
+    except Exception as e:
+        logger.error(f"Get next chunk error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/output/complete/<int:chunk_id>', methods=['POST'])
+def complete_chunk(chunk_id):
+    """Mark a chunk as completed after playback."""
+    try:
+        config = load_config()
+        persona_name = config.get('active_persona', 'default')
+        persona_config = get_active_persona(config)
+        
+        flair = get_memory_flair(persona_name, persona_config)
+        success = flair.mark_chunk_completed(chunk_id)
+        
+        return jsonify({'success': success})
+        
+    except Exception as e:
+        logger.error(f"Complete chunk error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/output/interrupt', methods=['POST'])
+def interrupt_output():
+    """Interrupt playback and move remaining chunks to thoughts."""
+    try:
+        data = request.json or {}
+        topic = data.get('topic')
+        
+        config = load_config()
+        persona_name = config.get('active_persona', 'default')
+        persona_config = get_active_persona(config)
+        
+        flair = get_memory_flair(persona_name, persona_config)
+        thought_id = flair.interrupt_queue(topic)
+        
+        return jsonify({
+            'success': True,
+            'thought_id': thought_id,
+            'saved_to_thoughts': thought_id is not None
+        })
+        
+    except Exception as e:
+        logger.error(f"Interrupt output error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/output/status', methods=['GET'])
+def get_queue_status():
+    """Get the current output queue status."""
+    try:
+        config = load_config()
+        persona_name = config.get('active_persona', 'default')
+        persona_config = get_active_persona(config)
+        
+        flair = get_memory_flair(persona_name, persona_config)
+        status = flair.get_queue_status()
+        
+        return jsonify({
+            'success': True,
+            **status
+        })
+        
+    except Exception as e:
+        logger.error(f"Get queue status error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/output/clear', methods=['POST'])
+def clear_output_queue():
+    """Clear the output queue."""
+    try:
+        config = load_config()
+        persona_name = config.get('active_persona', 'default')
+        persona_config = get_active_persona(config)
+        
+        flair = get_memory_flair(persona_name, persona_config)
+        success = flair.clear_queue()
+        
+        return jsonify({'success': success})
+        
+    except Exception as e:
+        logger.error(f"Clear queue error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ========== THOUGHTS API ==========
+
+@app.route('/api/thoughts', methods=['GET'])
+def get_thoughts_status():
+    """Get info about pending thoughts."""
+    try:
+        config = load_config()
+        persona_name = config.get('active_persona', 'default')
+        persona_config = get_active_persona(config)
+        
+        flair = get_memory_flair(persona_name, persona_config)
+        has_thoughts = flair.has_pending_thoughts()
+        
+        return jsonify({
+            'success': True,
+            'has_pending': has_thoughts
+        })
+        
+    except Exception as e:
+        logger.error(f"Get thoughts error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/thoughts/recall', methods=['POST'])
+def recall_thought():
+    """Recall the highest priority thought."""
+    try:
+        config = load_config()
+        persona_name = config.get('active_persona', 'default')
+        persona_config = get_active_persona(config)
+        
+        flair = get_memory_flair(persona_name, persona_config)
+        thought = flair.recall_thought()
+        
+        if thought:
+            return jsonify({
+                'success': True,
+                'thought': thought
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'thought': None,
+                'message': 'No pending thoughts'
+            })
+            
+    except Exception as e:
+        logger.error(f"Recall thought error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/interjection/classify', methods=['POST'])
+def classify_interjection():
+    """Classify an interjection as short (pause) or long (abandon)."""
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        transcript = data.get('transcript', '')
+        
+        config = load_config()
+        persona_name = config.get('active_persona', 'default')
+        persona_config = get_active_persona(config)
+        
+        flair = get_memory_flair(persona_name, persona_config)
+        classification = flair.classify_interjection(transcript)
+        
+        return jsonify({
+            'success': True,
+            'classification': classification,
+            'should_abandon': classification == 'long'
+        })
+        
+    except Exception as e:
+        logger.error(f"Classify interjection error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 async def synthesize_with_edge_tts(text: str, voice: str) -> bytes:

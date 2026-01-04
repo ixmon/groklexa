@@ -13,6 +13,11 @@ from .memory_flair import (
     Memory,
     DEFAULT_PERSONAS,
     EARCONS,
+    SentenceType,
+    chunk_text_for_speech,
+    truncate_for_speech,
+    SHORT_INTERJECTIONS,
+    THOUGHT_RECALL_TRIGGERS,
 )
 
 __all__ = [
@@ -23,6 +28,11 @@ __all__ = [
     "Memory",
     "DEFAULT_PERSONAS",
     "EARCONS",
+    "SentenceType",
+    "chunk_text_for_speech",
+    "truncate_for_speech",
+    "SHORT_INTERJECTIONS",
+    "THOUGHT_RECALL_TRIGGERS",
 ]
 
 

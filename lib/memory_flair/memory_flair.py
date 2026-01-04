@@ -62,6 +62,24 @@ class EscalationTier(Enum):
     HEAVY = "heavy"               # Cloud LLM (Grok, GPT-4o, ~3-5s)
 
 
+class SentenceType(Enum):
+    """
+    Classification of sentence structure/intent for filler selection.
+    
+    Different sentence types warrant different verbal fillers:
+    - INTERROGATIVE: User is asking a question → "Let me check...", "Hmm..."
+    - DECLARATIVE: User is stating something → "Got it", "Okay", "Noted"
+    - IMPERATIVE: User is giving a command → "On it", "Sure thing"
+    - EXCLAMATORY: User is expressing emotion → "Oh!", "Wow"
+    - FRAGMENT: Incomplete/short response → Use neutral fillers
+    """
+    INTERROGATIVE = "interrogative"   # Questions: "What time is it?", "How are you?"
+    DECLARATIVE = "declarative"       # Statements: "I like pizza", "The sky is blue"
+    IMPERATIVE = "imperative"         # Commands: "Set a timer", "Turn on the lights"
+    EXCLAMATORY = "exclamatory"       # Exclamations: "Wow!", "That's amazing!"
+    FRAGMENT = "fragment"             # Incomplete: "okay", "yes", "pizza"
+
+
 @dataclass
 class EscalationPlan:
     """
@@ -74,6 +92,7 @@ class EscalationPlan:
         buffer_style: Persona-specific style ("flirty", "professional", etc.)
         async_heavy: Whether heavy tier should run in background
         state: Classified conversation state
+        sentence_type: Classified sentence type (interrogative, declarative, etc.)
         earcon: Immediate sound to play (None if silent)
         filler: Verbal filler to synthesize ("uh", "hmm", etc.)
         deterministic_response: If pattern matched, the direct response
@@ -86,6 +105,7 @@ class EscalationPlan:
     buffer_style: str = "neutral"
     async_heavy: bool = False
     state: str = "casual_continuation"
+    sentence_type: str = "declarative"
     earcon: Optional[str] = None
     filler: Optional[str] = None
     deterministic_response: Optional[str] = None
@@ -109,11 +129,51 @@ class Memory:
 # PERSONA CONFIGURATIONS
 # ============================================================================
 
+# Sentence-type-specific fillers for each persona
+# Each persona has fillers appropriate to sentence type:
+#   - interrogative: User asked a question → thinking/searching fillers
+#   - declarative: User stated something → acknowledgment fillers
+#   - imperative: User gave a command → action confirmation fillers
+#   - exclamatory: User expressed emotion → matching energy fillers
+#   - neutral: Safe for any context (fallback)
+
 DEFAULT_PERSONAS: Dict[str, Dict[str, Any]] = {
     "flirty": {
         "buffer_style": "flirty",
         "escalation_threshold": 40,  # Lower = more likely to escalate
-        "fillers": ["mmhmm...", "oh?", "well...", "hmm, let me think...", "ooh..."],
+        "fillers": {
+            "interrogative": [
+                "Hmm, let me see...",
+                "Ooh, good question...",
+                "Let me think about that...",
+                "Hmm, checking...",
+                "One sec, babe...",
+            ],
+            "declarative": [
+                "Oh really?",
+                "I love that!",
+                "Noted~",
+                "Got it!",
+                "Ooh, interesting...",
+                "I'll remember that.",
+                "Learning something new every day!",
+            ],
+            "imperative": [
+                "On it!",
+                "Your wish is my command~",
+                "Sure thing!",
+                "Ooh, bossy... I like it.",
+                "Right away!",
+            ],
+            "exclamatory": [
+                "I know, right?!",
+                "Ha!",
+                "Wow!",
+                "Oh!",
+                "Yay!",
+            ],
+            "neutral": ["mmhmm...", "oh?", "well...", "ooh..."],
+        },
         "no_match_responses": [
             "You're wild... I love it!",
             "Hmm, that's a new one for me, babe.",
@@ -131,7 +191,36 @@ DEFAULT_PERSONAS: Dict[str, Dict[str, Any]] = {
     "professional": {
         "buffer_style": "professional",
         "escalation_threshold": 30,
-        "fillers": ["one moment...", "let me check...", "processing...", "understood..."],
+        "fillers": {
+            "interrogative": [
+                "One moment...",
+                "Let me check...",
+                "Searching...",
+                "Processing your query...",
+                "Consulting my sources...",
+            ],
+            "declarative": [
+                "Understood.",
+                "Noted.",
+                "I see.",
+                "Acknowledged.",
+                "Thank you for that information.",
+                "I'll record that.",
+            ],
+            "imperative": [
+                "Right away.",
+                "Processing...",
+                "Executing...",
+                "Understood, working on it.",
+                "On it.",
+            ],
+            "exclamatory": [
+                "Indeed.",
+                "I see.",
+                "Understood.",
+            ],
+            "neutral": ["one moment...", "processing...", "understood..."],
+        },
         "no_match_responses": [
             "I'm not sure I understand. Could you rephrase that?",
             "That's outside my current knowledge. Let me research that.",
@@ -147,7 +236,38 @@ DEFAULT_PERSONAS: Dict[str, Dict[str, Any]] = {
     "neutral": {
         "buffer_style": "neutral",
         "escalation_threshold": 35,
-        "fillers": ["uh...", "um...", "hmm...", "let me see...", "okay..."],
+        "fillers": {
+            "interrogative": [
+                "Hmm, let me see...",
+                "Let me check...",
+                "One moment...",
+                "Let me think...",
+                "Checking...",
+            ],
+            "declarative": [
+                "Okay.",
+                "Got it.",
+                "I see.",
+                "Noted.",
+                "Alright.",
+                "Cool.",
+                "I'll remember that.",
+            ],
+            "imperative": [
+                "Okay.",
+                "Sure.",
+                "On it.",
+                "Alright.",
+                "Working on it.",
+            ],
+            "exclamatory": [
+                "Oh!",
+                "Wow.",
+                "Ha!",
+                "Nice!",
+            ],
+            "neutral": ["uh...", "um...", "hmm...", "well...", "okay..."],
+        },
         "no_match_responses": [
             "I'm not sure about that.",
             "Hmm, I don't know.",
@@ -163,7 +283,37 @@ DEFAULT_PERSONAS: Dict[str, Dict[str, Any]] = {
     "snarky": {
         "buffer_style": "snarky",
         "escalation_threshold": 50,
-        "fillers": ["ugh, fine...", "okay okay...", "hold on...", "yeah yeah..."],
+        "fillers": {
+            "interrogative": [
+                "Ugh, let me look...",
+                "Hold on...",
+                "Hmm, let me see if I care...",
+                "Fine, checking...",
+                "One sec...",
+            ],
+            "declarative": [
+                "Cool story.",
+                "Okay, and?",
+                "Noted, I guess.",
+                "Fascinating.",
+                "If you say so.",
+                "Sure, whatever.",
+            ],
+            "imperative": [
+                "Ugh, fine...",
+                "Yeah yeah...",
+                "Okay okay...",
+                "Alright, alright...",
+                "On it, boss.",
+            ],
+            "exclamatory": [
+                "Okay, calm down.",
+                "Wow, chill.",
+                "Dramatic much?",
+                "Oh?",
+            ],
+            "neutral": ["ugh...", "hmm...", "whatever...", "okay..."],
+        },
         "no_match_responses": [
             "You're crazy... I love you, but you're crazy!",
             "I literally have no idea what you just said.",
@@ -230,6 +380,17 @@ DEFAULT_PATTERNS: List[Tuple[str, str, str, int]] = [
     (r"^(yes|yeah|yep|yup|sure|okay|ok|uh huh|mhm)[\s!.,]*$", "Got it!", "deterministic", 50),
     (r"^(no|nope|nah|not really)[\s!.,]*$", "Alright then.", "deterministic", 50),
     (r"^(thanks|thank you|thx)[\s!.,]*$", "You're welcome!", "deterministic", 50),
+    
+    # === THOUGHT RECALL TRIGGERS (deterministic) ===
+    # These trigger recall of interrupted/pending thoughts from the thoughts table
+    (r"^what('s| is| are) (you )?thinking( about)?\??$", "__RECALL_THOUGHT__", "deterministic", 85),
+    (r"^(anything|what('s| is)) on your mind\??$", "__RECALL_THOUGHT__", "deterministic", 85),
+    (r"^what were you saying\??$", "__RECALL_THOUGHT__", "deterministic", 85),
+    (r"^(please )?continue\??$", "__RECALL_THOUGHT__", "deterministic", 80),
+    (r"^go on\??$", "__RECALL_THOUGHT__", "deterministic", 80),
+    (r"^you were saying\??$", "__RECALL_THOUGHT__", "deterministic", 85),
+    (r"^what was that( about)?\??$", "__RECALL_THOUGHT__", "deterministic", 80),
+    (r"^tell me more\??$", "__RECALL_THOUGHT__", "deterministic", 80),
     
     # === PERSONAL QUESTIONS (low_param tier) ===
     (r"what('s| is) your (name|favorite|opinion)", None, "low_param", 40),
@@ -300,6 +461,239 @@ EARCONS = {
     "error": ["buzz", "bonk", "err"],
     "attention": ["ping", "alert", "notify"],
 }
+
+
+# ============================================================================
+# TEXT CHUNKING FOR TTS
+# ============================================================================
+
+def chunk_text_for_speech(text: str, max_chars: int = 250) -> List[str]:
+    """
+    Split text into speakable chunks at natural pause points.
+    
+    Chunks are split at sentence boundaries (. ! ?) or clause boundaries
+    (; : ,) to create natural-sounding speech segments. Each chunk targets
+    a maximum of ~250 characters, finding the closest natural pause under
+    the limit.
+    
+    Args:
+        text: The full text to chunk
+        max_chars: Maximum characters per chunk (default 250)
+        
+    Returns:
+        List of text chunks ready for TTS synthesis
+    """
+    if not text or not text.strip():
+        return []
+    
+    text = text.strip()
+    
+    # If text is short enough, return as-is
+    if len(text) <= max_chars:
+        return [text]
+    
+    chunks = []
+    remaining = text
+    
+    # Pause characters in order of preference (strongest to weakest)
+    # We look for these followed by a space to avoid splitting decimals, URLs, etc.
+    pause_patterns = [
+        ('. ', 2),   # Sentence end - period
+        ('! ', 2),   # Sentence end - exclamation
+        ('? ', 2),   # Sentence end - question
+        ('." ', 3),  # End quote after period
+        ('?" ', 3),  # End quote after question
+        ('!" ', 3),  # End quote after exclamation
+        ('; ', 2),   # Clause separator - semicolon
+        (': ', 2),   # Clause separator - colon
+        (', ', 2),   # Clause separator - comma
+        (' - ', 3),  # Em dash with spaces
+        ('— ', 2),   # Em dash
+    ]
+    
+    while remaining:
+        if len(remaining) <= max_chars:
+            chunks.append(remaining.strip())
+            break
+        
+        # Find the best split point under max_chars
+        best_split = -1
+        
+        # Look for pause patterns
+        for pattern, pattern_len in pause_patterns:
+            # Search for this pattern within the max_chars window
+            search_end = min(len(remaining), max_chars)
+            # Search from end to find the latest valid split point
+            idx = remaining.rfind(pattern, 0, search_end)
+            if idx > 0:
+                # Split after the punctuation (include it in current chunk)
+                split_point = idx + pattern_len - 1  # -1 to not include trailing space
+                if split_point > best_split:
+                    best_split = split_point
+                    break  # Use the first (strongest) pattern found
+        
+        # If no pause pattern found, split on word boundary
+        if best_split <= 0:
+            # Find last space before max_chars
+            space_idx = remaining.rfind(' ', 0, max_chars)
+            if space_idx > 0:
+                best_split = space_idx
+            else:
+                # No space found, force split at max_chars
+                best_split = max_chars
+        
+        # Extract chunk and update remaining
+        chunk = remaining[:best_split].strip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[best_split:].strip()
+    
+    return chunks
+
+
+def truncate_for_speech(text: str, target_chars: int = 500, tolerance: int = 100) -> Tuple[str, bool]:
+    """
+    Truncate text at the best natural stopping point near the target length.
+    
+    Finds sentence boundaries (. ! ?) near the target length and truncates
+    there to create natural-sounding speech that doesn't cut off mid-thought.
+    Handles abbreviations like U.S., Dr., Mr. to avoid false sentence breaks.
+    
+    Args:
+        text: The full text to potentially truncate
+        target_chars: Target character count (default 500)
+        tolerance: How far beyond target to search for a good break (default 100)
+        
+    Returns:
+        Tuple of (truncated_text, was_truncated)
+    """
+    if not text or not text.strip():
+        return "", False
+    
+    text = text.strip()
+    
+    # If text is short enough, return as-is
+    if len(text) <= target_chars + tolerance:
+        return text, False
+    
+    # Common abbreviations that should NOT be treated as sentence endings
+    # These patterns match the text BEFORE the period
+    abbreviations = {
+        # Titles
+        'mr', 'mrs', 'ms', 'dr', 'prof', 'rev', 'sr', 'jr', 'hon',
+        # Countries/places
+        'u.s', 'u.k', 'e.u',  # Note: "U.S" before the final period
+        # Common abbreviations
+        'vs', 'etc', 'inc', 'ltd', 'corp', 'co', 'govt', 'dept',
+        'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec',
+        'st', 'ave', 'blvd', 'rd', 'no', 'vol', 'pg', 'pp',
+        # Single letters (initials)
+        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+        'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    }
+    
+    def is_abbreviation(text: str, period_pos: int) -> bool:
+        """Check if the period at period_pos is part of an abbreviation."""
+        if period_pos <= 0:
+            return False
+        # Look back to find the word before the period
+        start = period_pos - 1
+        while start > 0 and text[start - 1].isalpha():
+            start -= 1
+        # Also check for dotted abbreviations like "U.S."
+        if start > 1 and text[start - 1] == '.':
+            start -= 2
+            while start > 0 and text[start - 1].isalpha():
+                start -= 1
+        word = text[start:period_pos].lower()
+        return word in abbreviations or len(word) <= 2
+    
+    # Sentence-ending patterns (strong breaks only)
+    sentence_endings = ['. ', '! ', '? ', '." ', '?" ', '!" ', '.\n', '!\n', '?\n']
+    
+    # Search window: from (target - tolerance/2) to (target + tolerance)
+    search_start = max(0, target_chars - tolerance // 2)
+    search_end = min(len(text), target_chars + tolerance)
+    
+    # Find the best sentence break in the search window
+    best_break = -1
+    
+    for ending in sentence_endings:
+        # Look for sentence endings, preferring ones closer to target
+        idx = search_start
+        while idx < search_end:
+            pos = text.find(ending, idx, search_end)
+            if pos == -1:
+                break
+            
+            # Check if this is an abbreviation (skip if so)
+            if ending.startswith('.') and is_abbreviation(text, pos):
+                idx = pos + 1
+                continue
+            
+            # Include the punctuation but not trailing space
+            break_point = pos + len(ending) - 1
+            if break_point > best_break:
+                best_break = break_point
+            idx = pos + 1
+    
+    # If we found a sentence break, use it
+    if best_break > 0:
+        truncated = text[:best_break].strip()
+        return truncated, True
+    
+    # Fallback: look for clause breaks (; : ,) or em dashes
+    clause_breaks = ['; ', ': ', ', ', ' - ', '— ']
+    for ending in clause_breaks:
+        idx = text.rfind(ending, search_start, search_end)
+        if idx > 0:
+            truncated = text[:idx + len(ending) - 1].strip()
+            return truncated, True
+    
+    # Last resort: break on word boundary near target
+    space_idx = text.rfind(' ', search_start, search_end)
+    if space_idx > 0:
+        truncated = text[:space_idx].strip()
+        if not truncated.endswith(('.', '!', '?')):
+            truncated += '...'  # Add ellipsis to indicate continuation
+        return truncated, True
+    
+    # Absolute fallback: hard cut at target
+    truncated = text[:target_chars].strip() + '...'
+    return truncated, True
+
+
+# ============================================================================
+# INTERJECTION CLASSIFICATION
+# ============================================================================
+
+# Short interjections that should pause (not abandon) the output queue
+SHORT_INTERJECTIONS = {
+    # Affirmations
+    "yes", "yeah", "yep", "yup", "sure", "okay", "ok", "right", "uh huh",
+    "mhm", "mm hmm", "absolutely", "definitely", "exactly", "correct",
+    # Continuations
+    "go on", "continue", "and", "then", "so", "keep going",
+    # Acknowledgments
+    "i see", "got it", "understood", "interesting", "cool", "nice", "wow",
+    # Negations (still short)
+    "no", "nope", "nah", "not really",
+    # Backchannel
+    "uh", "um", "hmm", "huh", "oh", "ah",
+}
+
+# Thought recall trigger patterns
+THOUGHT_RECALL_TRIGGERS = [
+    r"^what'?s? up\??$",
+    r"^what('s| is| are) (you )?thinking( about)?\??$",
+    r"^anything on your mind\??$",
+    r"^what were you saying\??$",
+    r"^(please )?continue\??$",
+    r"^go on\??$",
+    r"^you were saying\??$",
+    r"^what was that( about)?\??$",
+    r"^tell me more\??$",
+]
 
 
 # ============================================================================
@@ -414,12 +808,60 @@ class MemoryFlair:
             )
         """)
         
+        # Output queue for chunked TTS playback
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS output_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                persona TEXT NOT NULL,
+                session_id TEXT,
+                sequence INTEGER NOT NULL,
+                chunk_text TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at REAL NOT NULL,
+                played_at REAL
+            )
+        """)
+        
+        # Thoughts table for interrupted/unreleased content
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS thoughts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                persona TEXT NOT NULL,
+                topic TEXT,
+                content TEXT NOT NULL,
+                source TEXT DEFAULT 'interrupted',
+                priority REAL DEFAULT 0.5,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                recalled INTEGER DEFAULT 0
+            )
+        """)
+        
+        # Tool insights table for Universal Tool Handler RAG
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tool_insights (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                persona TEXT NOT NULL,
+                query TEXT NOT NULL,
+                tool_used TEXT NOT NULL,
+                tool_args TEXT,
+                result_summary TEXT,
+                full_response TEXT,
+                keywords TEXT,
+                created_at REAL NOT NULL,
+                used_count INTEGER DEFAULT 0
+            )
+        """)
+        
         # Create indices for fast lookup
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_topic ON memories(topic)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_persona ON memories(persona)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_states_timestamp ON states(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_corpus_keywords ON corpus(keywords)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_geocache_query ON geocache(query)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_output_queue_persona ON output_queue(persona, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_thoughts_persona ON thoughts(persona, recalled, expires_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tool_insights_persona ON tool_insights(persona, keywords)")
         
         conn.commit()
         conn.close()
@@ -460,6 +902,10 @@ class MemoryFlair:
         state = self._classify_state(transcript_lower, history, context)
         plan.state = state.value
         
+        # Step 1.5: Classify sentence type (for filler selection)
+        sentence_type = self._classify_sentence_type(transcript_lower)
+        plan.sentence_type = sentence_type.value
+        
         # Step 2: Try pattern matching
         pattern_result = self._match_patterns(transcript_lower)
         if pattern_result:
@@ -472,6 +918,20 @@ class MemoryFlair:
                     plan.deterministic_response = random.choice(
                         self.persona_config.get("greeting_responses", ["Hello!"])
                     )
+                elif response == "__RECALL_THOUGHT__":
+                    # Check for pending thoughts to recall
+                    thought = self.recall_thought()
+                    if thought:
+                        # Queue the thought content for playback
+                        plan.deterministic_response = f"Oh right, I was thinking about {thought.get('topic', 'something')}... {thought['content']}"
+                        plan.matched_pattern = f"__RECALL_THOUGHT__ (id={thought['id']})"
+                    else:
+                        # No pending thoughts
+                        plan.deterministic_response = random.choice([
+                            "Nothing specific on my mind right now.",
+                            "Just here, ready to help!",
+                            "I'm all ears, what's up?",
+                        ])
                 elif not response.startswith("__"):
                     plan.deterministic_response = response
                 
@@ -482,7 +942,7 @@ class MemoryFlair:
                     plan.earcon = random.choice(EARCONS["acknowledge"])
             
             elif tier == "tool_intent":
-                # Tool action needed
+                # Tool action needed - use interrogative fillers (user is asking for info)
                 plan.selected_tiers = [
                     EscalationTier.EARCONS.value,
                     EscalationTier.LOW_PARAM.value,  # Use LLM with tools
@@ -490,6 +950,7 @@ class MemoryFlair:
                 plan.escalation_score = 30
                 plan.max_wait_seconds = 2.0
                 plan.earcon = random.choice(EARCONS["thinking"])
+                plan.filler = self._select_filler(sentence_type, needs_thinking=True)
                 plan.state = ConversationState.TOOL_INTENT.value
             
             elif tier == "mid_tool":
@@ -501,7 +962,7 @@ class MemoryFlair:
                 plan.escalation_score = 50
                 plan.max_wait_seconds = 3.0
                 plan.earcon = random.choice(EARCONS["thinking"])
-                plan.filler = random.choice(self.persona_config.get("fillers", ["hmm..."]))
+                plan.filler = self._select_filler(sentence_type, needs_thinking=True)
             
             elif tier == "heavy":
                 # Complex reasoning needed
@@ -513,7 +974,7 @@ class MemoryFlair:
                 plan.max_wait_seconds = 5.0
                 plan.async_heavy = True
                 plan.earcon = random.choice(EARCONS["thinking"])
-                plan.filler = random.choice(self.persona_config.get("fillers", ["let me think..."]))
+                plan.filler = self._select_filler(sentence_type, needs_thinking=True)
         
         # Step 3: If no pattern match, check question type
         if not plan.selected_tiers:
@@ -526,6 +987,8 @@ class MemoryFlair:
                 plan.escalation_score = 40
                 plan.max_wait_seconds = 2.0
                 plan.earcon = random.choice(EARCONS["acknowledge"])
+                # Questions need thinking fillers
+                plan.filler = self._select_filler(SentenceType.INTERROGATIVE)
         
         # Step 4: If still nothing, use heuristics
         if not plan.selected_tiers:
@@ -534,6 +997,8 @@ class MemoryFlair:
                 plan.selected_tiers = [EscalationTier.LOW_PARAM.value]
                 plan.escalation_score = 25
                 plan.max_wait_seconds = 1.5
+                # Use sentence-type-appropriate filler
+                plan.filler = self._select_filler(sentence_type)
             else:
                 # Default to low_param for general conversation
                 plan.selected_tiers = [
@@ -543,6 +1008,8 @@ class MemoryFlair:
                 plan.escalation_score = 30
                 plan.max_wait_seconds = 2.0
                 plan.earcon = random.choice(EARCONS["acknowledge"])
+                # Use sentence-type-appropriate filler
+                plan.filler = self._select_filler(sentence_type)
         
         # Step 5: Retrieve relevant memories
         plan.memory_context = self._retrieve_memories(transcript_clean, limit=3)
@@ -601,6 +1068,183 @@ class MemoryFlair:
             return ConversationState.CASUAL_CONTINUATION
         
         return ConversationState.CASUAL_CONTINUATION
+    
+    def _classify_sentence_type(self, transcript: str) -> SentenceType:
+        """
+        Classify the sentence type using deterministic rules.
+        
+        This runs in <1ms and determines whether the input is:
+        - INTERROGATIVE: Questions
+        - DECLARATIVE: Statements of fact/opinion
+        - IMPERATIVE: Commands/requests
+        - EXCLAMATORY: Emotional expressions
+        - FRAGMENT: Incomplete phrases
+        
+        Args:
+            transcript: Normalized (lowercase, stripped) transcript
+            
+        Returns:
+            SentenceType enum value
+        """
+        # Handle empty input
+        if not transcript:
+            return SentenceType.FRAGMENT
+        
+        words = transcript.split()
+        word_count = len(words)
+        first_word = words[0].rstrip("'s") if words else ""
+        
+        # === FRAGMENT detection ===
+        # Very short responses without clear structure
+        if word_count == 1:
+            # Single-word affirmations/negations
+            fragments = {
+                "yes", "yeah", "yep", "yup", "no", "nope", "nah",
+                "okay", "ok", "sure", "maybe", "probably", "definitely",
+                "thanks", "please", "sorry", "what", "huh", "right"
+            }
+            if first_word in fragments:
+                return SentenceType.FRAGMENT
+        
+        # === EXCLAMATORY detection ===
+        # Check for exclamation mark at end
+        if transcript.rstrip().endswith("!"):
+            # Short exclamations
+            if word_count <= 4:
+                return SentenceType.EXCLAMATORY
+            # Emotion words with exclamation
+            emotion_patterns = [
+                r"\b(wow|amazing|awesome|incredible|fantastic|terrible|horrible)\b",
+                r"\b(oh my|holy|damn|dang|geez|yay|hooray|ugh)\b",
+                r"^(yes|no|yeah|nope|what)!*$",
+            ]
+            for pattern in emotion_patterns:
+                if re.search(pattern, transcript):
+                    return SentenceType.EXCLAMATORY
+        
+        # === INTERROGATIVE detection ===
+        # Question mark is the strongest signal
+        if "?" in transcript:
+            return SentenceType.INTERROGATIVE
+        
+        # Question words at start
+        question_starters = {
+            "who", "what", "where", "when", "why", "how",
+            "which", "whose", "whom", "is", "are", "was", "were",
+            "do", "does", "did", "can", "could", "will", "would",
+            "should", "shall", "may", "might", "have", "has", "had"
+        }
+        if first_word in question_starters:
+            # Auxiliary verb inversion patterns (questions without ?)
+            aux_patterns = [
+                r"^(is|are|was|were|do|does|did|can|could|will|would|should|have|has|had)\s+(you|it|he|she|they|we|this|that|there)\b",
+                r"^(what|where|when|why|how|who|which)\s+",
+            ]
+            for pattern in aux_patterns:
+                if re.search(pattern, transcript):
+                    return SentenceType.INTERROGATIVE
+        
+        # Tag questions (statement + question tag)
+        tag_patterns = [
+            r"\b(right|isn't it|aren't you|don't you|won't you|can't you|isn't that)\s*\??$",
+            r"\b(do you think|you know)\s*\??$",
+        ]
+        for pattern in tag_patterns:
+            if re.search(pattern, transcript):
+                return SentenceType.INTERROGATIVE
+        
+        # === IMPERATIVE detection ===
+        # Commands typically start with a verb (no subject)
+        imperative_verbs = {
+            # Common command verbs
+            "set", "get", "tell", "show", "find", "search", "play", "stop",
+            "turn", "open", "close", "start", "end", "create", "delete",
+            "make", "give", "take", "put", "add", "remove", "list", "check",
+            "look", "call", "send", "read", "write", "save", "load", "run",
+            "help", "explain", "describe", "remind", "cancel", "pause", "resume",
+            # Polite imperatives
+            "please", "let", "try", "go", "come", "wait", "hold",
+        }
+        
+        if first_word in imperative_verbs:
+            return SentenceType.IMPERATIVE
+        
+        # "Please" + verb pattern
+        if first_word == "please" and word_count > 1:
+            return SentenceType.IMPERATIVE
+        
+        # "Let me/us" pattern
+        if transcript.startswith("let me ") or transcript.startswith("let's ") or transcript.startswith("let us "):
+            return SentenceType.IMPERATIVE
+        
+        # "Can you" / "Could you" / "Would you" as polite imperatives
+        polite_imperative_patterns = [
+            r"^(can|could|would|will)\s+you\s+\w+",
+        ]
+        for pattern in polite_imperative_patterns:
+            if re.search(pattern, transcript):
+                # This is a polite request, treat as imperative
+                return SentenceType.IMPERATIVE
+        
+        # === DECLARATIVE detection ===
+        # Subject-verb patterns indicate declarative
+        declarative_patterns = [
+            # Pronoun + verb
+            r"^(i|you|he|she|it|we|they)\s+(am|is|are|was|were|have|has|had|do|does|did|can|could|will|would|like|love|hate|think|believe|want|need|know|feel|see|hear)\b",
+            # "My/Your/The" + noun patterns
+            r"^(my|your|the|a|an|this|that|these|those)\s+\w+\s+(is|are|was|were|has|have)\b",
+            # "There is/are" pattern
+            r"^there\s+(is|are|was|were)\b",
+            # "It's" / "That's" patterns
+            r"^(it's|that's|here's|there's)\b",
+        ]
+        for pattern in declarative_patterns:
+            if re.search(pattern, transcript):
+                return SentenceType.DECLARATIVE
+        
+        # === FALLBACK ===
+        # If we can't determine, check word count
+        if word_count <= 2:
+            return SentenceType.FRAGMENT
+        
+        # Default to declarative for longer statements
+        return SentenceType.DECLARATIVE
+    
+    def _select_filler(self, sentence_type: SentenceType, needs_thinking: bool = False) -> Optional[str]:
+        """
+        Select an appropriate filler based on sentence type and persona.
+        
+        Args:
+            sentence_type: The classified sentence type
+            needs_thinking: If True, prefer thinking-style fillers even for declaratives
+            
+        Returns:
+            A filler string appropriate for the sentence type, or None
+        """
+        fillers_config = self.persona_config.get("fillers", {})
+        
+        # Handle legacy format (flat list of fillers)
+        if isinstance(fillers_config, list):
+            return random.choice(fillers_config) if fillers_config else None
+        
+        # Get sentence-type-specific fillers
+        type_key = sentence_type.value
+        
+        # For interrogatives or when thinking is needed, use interrogative fillers
+        if needs_thinking and sentence_type == SentenceType.DECLARATIVE:
+            type_key = "interrogative"
+        
+        type_fillers = fillers_config.get(type_key, [])
+        
+        # Fallback to neutral fillers if no type-specific ones
+        if not type_fillers:
+            type_fillers = fillers_config.get("neutral", [])
+        
+        # Final fallback
+        if not type_fillers:
+            return None
+        
+        return random.choice(type_fillers)
     
     def _match_patterns(
         self,
@@ -908,19 +1552,635 @@ class MemoryFlair:
             return results
         except:
             return []
+    
+    # ========================================================================
+    # OUTPUT QUEUE - Chunked TTS playback management
+    # ========================================================================
+    
+    def queue_output(self, text: str, session_id: str = None) -> List[int]:
+        """
+        Chunk text and queue it for TTS playback.
+        
+        Args:
+            text: The full text to chunk and queue
+            session_id: Optional session identifier
+            
+        Returns:
+            List of chunk IDs that were queued
+        """
+        chunks = chunk_text_for_speech(text)
+        if not chunks:
+            return []
+        
+        chunk_ids = []
+        now = time.time()
+        
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            
+            # Clear any pending chunks for this persona first
+            cursor.execute("""
+                UPDATE output_queue SET status = 'abandoned'
+                WHERE persona = ? AND status = 'pending'
+            """, (self.persona_name,))
+            
+            # Insert new chunks
+            for seq, chunk in enumerate(chunks, 1):
+                cursor.execute("""
+                    INSERT INTO output_queue (persona, session_id, sequence, chunk_text, status, created_at)
+                    VALUES (?, ?, ?, ?, 'pending', ?)
+                """, (self.persona_name, session_id, seq, chunk, now))
+                chunk_ids.append(cursor.lastrowid)
+            
+            conn.commit()
+            conn.close()
+            return chunk_ids
+        except Exception as e:
+            return []
+    
+    def pop_next_chunk(self) -> Optional[Dict]:
+        """
+        Get the next pending chunk for playback.
+        
+        Returns:
+            Dict with chunk info, or None if queue is empty
+        """
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, chunk_text, sequence, session_id
+                FROM output_queue
+                WHERE persona = ? AND status = 'pending'
+                ORDER BY sequence ASC
+                LIMIT 1
+            """, (self.persona_name,))
+            
+            row = cursor.fetchone()
+            if row:
+                # Mark as playing
+                cursor.execute("""
+                    UPDATE output_queue SET status = 'playing', played_at = ?
+                    WHERE id = ?
+                """, (time.time(), row[0]))
+                conn.commit()
+                conn.close()
+                
+                return {
+                    'id': row[0],
+                    'text': row[1],
+                    'sequence': row[2],
+                    'session_id': row[3]
+                }
+            
+            conn.close()
+            return None
+        except:
+            return None
+    
+    def mark_chunk_completed(self, chunk_id: int) -> bool:
+        """Mark a chunk as completed after playback."""
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE output_queue SET status = 'completed'
+                WHERE id = ?
+            """, (chunk_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except:
+            return False
+    
+    def interrupt_queue(self, topic: str = None, ttl_hours: float = 24) -> Optional[int]:
+        """
+        Interrupt the queue and move remaining chunks to thoughts.
+        
+        Args:
+            topic: Optional topic for the interrupted content
+            ttl_hours: How long to keep the thought (default 24 hours)
+            
+        Returns:
+            Thought ID if content was saved, None otherwise
+        """
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            
+            # Get all pending chunks
+            cursor.execute("""
+                SELECT chunk_text FROM output_queue
+                WHERE persona = ? AND status = 'pending'
+                ORDER BY sequence ASC
+            """, (self.persona_name,))
+            
+            pending_chunks = [row[0] for row in cursor.fetchall()]
+            
+            if not pending_chunks:
+                conn.close()
+                return None
+            
+            # Combine into single thought
+            remaining_content = " ".join(pending_chunks)
+            
+            # Mark chunks as interrupted
+            cursor.execute("""
+                UPDATE output_queue SET status = 'interrupted'
+                WHERE persona = ? AND status = 'pending'
+            """, (self.persona_name,))
+            
+            # Store as thought
+            now = time.time()
+            expires_at = now + (ttl_hours * 3600)
+            
+            cursor.execute("""
+                INSERT INTO thoughts (persona, topic, content, source, priority, created_at, expires_at)
+                VALUES (?, ?, ?, 'interrupted', 0.7, ?, ?)
+            """, (self.persona_name, topic, remaining_content, now, expires_at))
+            
+            thought_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return thought_id
+        except:
+            return None
+    
+    def get_queue_status(self) -> Dict:
+        """Get the current queue status."""
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT status, COUNT(*) FROM output_queue
+                WHERE persona = ?
+                GROUP BY status
+            """, (self.persona_name,))
+            
+            status_counts = {row[0]: row[1] for row in cursor.fetchall()}
+            
+            cursor.execute("""
+                SELECT COUNT(*) FROM output_queue
+                WHERE persona = ? AND status = 'pending'
+            """, (self.persona_name,))
+            
+            pending = cursor.fetchone()[0]
+            conn.close()
+            
+            return {
+                'pending': pending,
+                'has_pending': pending > 0,
+                'counts': status_counts
+            }
+        except:
+            return {'pending': 0, 'has_pending': False, 'counts': {}}
+    
+    def clear_queue(self) -> bool:
+        """Clear all pending chunks from the queue."""
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM output_queue
+                WHERE persona = ? AND status = 'pending'
+            """, (self.persona_name,))
+            conn.commit()
+            conn.close()
+            return True
+        except:
+            return False
+    
+    # ========================================================================
+    # THOUGHTS - Store and recall interrupted/deferred content
+    # ========================================================================
+    
+    def store_thought(
+        self,
+        content: str,
+        topic: str = None,
+        source: str = "manual",
+        priority: float = 0.5,
+        ttl_hours: float = 24
+    ) -> Optional[int]:
+        """
+        Store a thought for future recall.
+        
+        Args:
+            content: The thought content
+            topic: Optional topic/keywords
+            source: Source type ("interrupted", "research", "dreaming", "manual")
+            priority: Relevance score 0-1 (higher = more likely to recall)
+            ttl_hours: Hours until expiration
+            
+        Returns:
+            Thought ID if stored, None on error
+        """
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            
+            now = time.time()
+            expires_at = now + (ttl_hours * 3600)
+            
+            cursor.execute("""
+                INSERT INTO thoughts (persona, topic, content, source, priority, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (self.persona_name, topic, content, source, priority, now, expires_at))
+            
+            thought_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return thought_id
+        except:
+            return None
+    
+    def recall_thought(self) -> Optional[Dict]:
+        """
+        Get the highest priority unexpired thought.
+        
+        Returns:
+            Dict with thought info, or None if no thoughts available
+        """
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            
+            now = time.time()
+            
+            cursor.execute("""
+                SELECT id, topic, content, source, priority, created_at
+                FROM thoughts
+                WHERE persona = ? AND recalled = 0 AND expires_at > ?
+                ORDER BY priority DESC, created_at DESC
+                LIMIT 1
+            """, (self.persona_name, now))
+            
+            row = cursor.fetchone()
+            if row:
+                # Mark as recalled
+                cursor.execute("""
+                    UPDATE thoughts SET recalled = 1 WHERE id = ?
+                """, (row[0],))
+                conn.commit()
+                conn.close()
+                
+                return {
+                    'id': row[0],
+                    'topic': row[1],
+                    'content': row[2],
+                    'source': row[3],
+                    'priority': row[4],
+                    'created_at': row[5]
+                }
+            
+            conn.close()
+            return None
+        except:
+            return None
+    
+    def check_thought_triggers(self, transcript: str) -> bool:
+        """
+        Check if the transcript matches thought recall trigger patterns.
+        
+        Args:
+            transcript: The user's input
+            
+        Returns:
+            True if this should trigger thought recall
+        """
+        transcript_lower = transcript.lower().strip()
+        
+        for pattern in THOUGHT_RECALL_TRIGGERS:
+            if re.match(pattern, transcript_lower, re.IGNORECASE):
+                return True
+        
+        return False
+    
+    def has_pending_thoughts(self) -> bool:
+        """Check if there are any unexpired, unrecalled thoughts."""
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            
+            now = time.time()
+            cursor.execute("""
+                SELECT COUNT(*) FROM thoughts
+                WHERE persona = ? AND recalled = 0 AND expires_at > ?
+            """, (self.persona_name, now))
+            
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count > 0
+        except:
+            return False
+    
+    def expire_old_thoughts(self) -> int:
+        """Delete expired thoughts. Returns count of deleted rows."""
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+
+            now = time.time()
+            cursor.execute("""
+                DELETE FROM thoughts WHERE expires_at < ?
+            """, (now,))
+
+            deleted = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return deleted
+        except:
+            return 0
+
+    # ========================================================================
+    # TOOL INSIGHTS (Universal Tool Handler RAG)
+    # ========================================================================
+
+    def store_tool_insight(
+        self,
+        query: str,
+        tool_used: str,
+        tool_args: dict = None,
+        result_summary: str = None,
+        full_response: str = None,
+        keywords: List[str] = None
+    ) -> Optional[int]:
+        """
+        Store a tool call result for future RAG retrieval.
+
+        Args:
+            query: The user's original query that triggered the tool
+            tool_used: Name of the tool that was called
+            tool_args: Arguments passed to the tool (as dict)
+            result_summary: Short summary of the result
+            full_response: Full formatted response
+            keywords: Keywords for matching future queries
+
+        Returns:
+            Insight ID if stored, None on error
+        """
+        try:
+            import json
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+
+            now = time.time()
+            args_json = json.dumps(tool_args) if tool_args else None
+            keywords_str = ",".join(keywords) if keywords else self._extract_keywords(query)
+
+            cursor.execute("""
+                INSERT INTO tool_insights 
+                (persona, query, tool_used, tool_args, result_summary, full_response, keywords, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (self.persona_name, query, tool_used, args_json, result_summary, full_response, keywords_str, now))
+
+            insight_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return insight_id
+        except Exception as e:
+            return None
+
+    def retrieve_tool_insights(self, query: str, max_results: int = 3) -> List[Dict]:
+        """
+        Retrieve relevant tool insights based on keyword matching.
+
+        Args:
+            query: Current user query to match against
+            max_results: Maximum number of insights to return
+
+        Returns:
+            List of matching insights sorted by relevance
+        """
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+
+            # Extract keywords from query
+            query_keywords = set(self._extract_keywords(query).lower().split(","))
+            
+            if not query_keywords:
+                conn.close()
+                return []
+
+            # Get all insights for this persona
+            cursor.execute("""
+                SELECT id, query, tool_used, tool_args, result_summary, full_response, keywords, created_at, used_count
+                FROM tool_insights
+                WHERE persona = ?
+                ORDER BY created_at DESC
+                LIMIT 100
+            """, (self.persona_name,))
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                return []
+
+            # Score by keyword overlap
+            scored = []
+            for row in rows:
+                insight_keywords = set(row[6].lower().split(",")) if row[6] else set()
+                overlap = len(query_keywords & insight_keywords)
+                if overlap > 0:
+                    scored.append((overlap, {
+                        'id': row[0],
+                        'query': row[1],
+                        'tool_used': row[2],
+                        'tool_args': row[3],
+                        'result_summary': row[4],
+                        'full_response': row[5],
+                        'keywords': row[6],
+                        'created_at': row[7],
+                        'used_count': row[8],
+                        'relevance_score': overlap
+                    }))
+
+            # Sort by overlap score (descending), return top results
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [item[1] for item in scored[:max_results]]
+
+        except Exception as e:
+            return []
+
+    def increment_insight_usage(self, insight_id: int) -> bool:
+        """Increment the used_count for an insight."""
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE tool_insights SET used_count = used_count + 1 WHERE id = ?
+            """, (insight_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except:
+            return False
+
+    def _extract_keywords(self, text: str) -> str:
+        """Extract keywords from text for storage/matching."""
+        # Use existing stopwords and simple extraction
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+        # Filter stopwords
+        stopwords = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 
+                     'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+                     'would', 'could', 'should', 'may', 'might', 'must', 'can',
+                     'what', 'which', 'who', 'whom', 'this', 'that', 'these',
+                     'those', 'and', 'but', 'or', 'nor', 'for', 'yet', 'so',
+                     'in', 'on', 'at', 'to', 'from', 'of', 'with', 'about'}
+        keywords = [w for w in words if w not in stopwords]
+        return ",".join(keywords[:10])  # Limit to 10 keywords
+
+    # ========================================================================
+    # INTERJECTION CLASSIFICATION
+    # ========================================================================
+    
+    def classify_interjection(self, transcript: str) -> str:
+        """
+        Classify whether an interjection is short (pause queue) or long (abandon).
+        
+        Short interjections: affirmations, continuations, backchannel
+        Long interjections: new questions, new topics, commands
+        
+        Args:
+            transcript: The user's speech during AI playback
+            
+        Returns:
+            "short" if queue should pause, "long" if queue should be abandoned
+        """
+        transcript_lower = transcript.lower().strip()
+        words = transcript_lower.split()
+        word_count = len(words)
+        
+        # Very short utterances are usually backchannel
+        if word_count <= 2:
+            # Check if it's a known short interjection
+            if transcript_lower in SHORT_INTERJECTIONS:
+                return "short"
+            # Single words are usually short
+            if word_count == 1:
+                return "short"
+        
+        # Check for short interjection phrases
+        for phrase in SHORT_INTERJECTIONS:
+            if transcript_lower == phrase or transcript_lower.startswith(phrase + " "):
+                return "short"
+        
+        # If it's a question, it's a long interjection (new topic)
+        if "?" in transcript or self._classify_sentence_type(transcript_lower) == SentenceType.INTERROGATIVE:
+            return "long"
+        
+        # If it contains question words, likely a new topic
+        question_words = {"what", "where", "when", "why", "how", "who", "which"}
+        if any(w in words for w in question_words):
+            return "long"
+        
+        # If it's a command/imperative, likely a new request
+        if self._classify_sentence_type(transcript_lower) == SentenceType.IMPERATIVE:
+            return "long"
+        
+        # Longer statements (4+ words) are usually new topics
+        if word_count >= 4:
+            return "long"
+        
+        # Default to short for ambiguous cases
+        return "short"
 
 
 # ============================================================================
 # TEST FUNCTION
 # ============================================================================
 
+def test_sentence_type_classification():
+    """Test the sentence type classification with examples."""
+    import tempfile
+    
+    print("=" * 70)
+    print("Testing Sentence Type Classification")
+    print("=" * 70)
+    
+    # Create temp database
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    
+    flair = MemoryFlair(db_path=db_path, persona="neutral")
+    
+    # Test cases organized by expected type
+    test_cases = [
+        # (transcript, expected_type)
+        # INTERROGATIVE
+        ("What time is it?", "interrogative"),
+        ("How much does China weigh?", "interrogative"),
+        ("Who was the first president?", "interrogative"),
+        ("Where is the nearest coffee shop", "interrogative"),
+        ("Why is the sky blue", "interrogative"),
+        ("Is it raining outside?", "interrogative"),
+        ("Can you help me with this?", "interrogative"),
+        ("Do you know the answer", "interrogative"),
+        ("You like pizza, right?", "interrogative"),
+        
+        # DECLARATIVE
+        ("I like pizza", "declarative"),
+        ("My favorite color is blue", "declarative"),
+        ("The weather is nice today", "declarative"),
+        ("I think we should go outside", "declarative"),
+        ("That's a great idea", "declarative"),
+        ("It's raining outside", "declarative"),
+        ("I have three cats", "declarative"),
+        
+        # IMPERATIVE
+        ("Set a timer for 5 minutes", "imperative"),
+        ("Tell me a joke", "imperative"),
+        ("Search for nearby restaurants", "imperative"),
+        ("Please turn on the lights", "imperative"),
+        ("Let me know when you're done", "imperative"),
+        ("Stop the music", "imperative"),
+        ("Can you set a reminder", "imperative"),
+        ("Would you play some music", "imperative"),
+        
+        # EXCLAMATORY
+        ("Wow!", "exclamatory"),
+        ("That's amazing!", "exclamatory"),
+        ("Oh my god!", "exclamatory"),
+        ("No way!", "exclamatory"),
+        
+        # FRAGMENT
+        ("yes", "fragment"),
+        ("okay", "fragment"),
+        ("maybe", "fragment"),
+        ("thanks", "fragment"),
+    ]
+    
+    correct = 0
+    total = len(test_cases)
+    
+    for transcript, expected in test_cases:
+        result = flair._classify_sentence_type(transcript.lower())
+        status = "✓" if result.value == expected else "✗"
+        if result.value == expected:
+            correct += 1
+        print(f"  {status} '{transcript}' → {result.value} (expected: {expected})")
+    
+    accuracy = (correct / total) * 100
+    print(f"\nAccuracy: {correct}/{total} ({accuracy:.1f}%)")
+    
+    # Cleanup
+    Path(db_path).unlink(missing_ok=True)
+    
+    return correct == total
+
+
 def test_memory_flair():
     """Test the MemoryFlair module with sample transcripts."""
     import tempfile
     
-    print("=" * 60)
-    print("Testing MemoryFlair")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("Testing MemoryFlair Decision Engine")
+    print("=" * 70)
     
     # Create temp database
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -931,29 +2191,32 @@ def test_memory_flair():
         print(f"\n--- Persona: {persona} ---")
         flair = MemoryFlair(db_path=db_path, persona=persona)
         
+        # Test cases with expected sentence types
         test_cases = [
-            "Hello!",
-            "What time is it?",
-            "Set a timer for 5 minutes",
-            "What's the weather like in Seattle?",
-            "Think deeply about the meaning of life",
-            "Who was the first president?",
-            "Tell me a joke",
-            "and then what happened?",
-            "Search Twitter for trending topics",
-            "asdfghjkl qwerty random gibberish",
+            # (transcript, description)
+            ("Hello!", "greeting/exclamatory"),
+            ("What time is it?", "question/tool"),
+            ("Set a timer for 5 minutes", "imperative/tool"),
+            ("I like pizza", "declarative statement"),
+            ("What's the weather like in Seattle?", "question/tool"),
+            ("Think deeply about the meaning of life", "imperative/heavy"),
+            ("Who was the first president?", "question/search"),
+            ("Tell me a joke", "imperative"),
+            ("That's really cool!", "exclamatory"),
+            ("and then what happened?", "question/continuation"),
+            ("My favorite food is tacos", "declarative"),
+            ("okay", "fragment/affirmation"),
         ]
         
-        for transcript in test_cases:
+        for transcript, description in test_cases:
             start = time.perf_counter()
             plan = flair.decide(transcript)
             elapsed_ms = (time.perf_counter() - start) * 1000
             
-            print(f"\n  Input: '{transcript}'")
+            print(f"\n  Input: '{transcript}' ({description})")
+            print(f"  Sentence Type: {plan.sentence_type}")
             print(f"  State: {plan.state}")
             print(f"  Tiers: {plan.selected_tiers}")
-            print(f"  Score: {plan.escalation_score}")
-            print(f"  Earcon: {plan.earcon}")
             print(f"  Filler: {plan.filler}")
             if plan.deterministic_response:
                 print(f"  Response: {plan.deterministic_response}")
@@ -962,11 +2225,15 @@ def test_memory_flair():
     # Cleanup
     Path(db_path).unlink(missing_ok=True)
     
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("Tests complete!")
-    print("=" * 60)
+    print("=" * 70)
 
 
 if __name__ == "__main__":
+    # Run sentence type classification tests first
+    test_sentence_type_classification()
+    
+    # Then run the full decision engine tests
     test_memory_flair()
 
