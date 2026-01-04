@@ -152,7 +152,7 @@ def get_memory_flair(persona_name: str, persona_config: dict = None) -> MemoryFl
             logger.info(f"Creating MemoryFlair for persona '{persona_name}' with style '{buffer_style}'")
             _memory_flair_instances[persona_name] = MemoryFlair(
                 db_path=db_path,
-                persona=persona_name  # Use actual persona name, not buffer_style
+                persona=buffer_style  # Use buffer_style to get correct persona config from DEFAULT_PERSONAS
             )
         
         return _memory_flair_instances[persona_name]

@@ -141,38 +141,22 @@ DEFAULT_PERSONAS: Dict[str, Dict[str, Any]] = {
     "flirty": {
         "buffer_style": "flirty",
         "escalation_threshold": 40,  # Lower = more likely to escalate
+        # Fillers must match audio file names in static/fillers/{persona}/
+        # Use simple identifiers that can be .wav filenames
         "fillers": {
             "interrogative": [
-                "Hmm, let me see...",
-                "Ooh, good question...",
-                "Let me think about that...",
-                "Hmm, checking...",
-                "One sec, babe...",
+                "hmm", "let-me-see", "let-me-think", "one-moment", "hmmm",
             ],
             "declarative": [
-                "Oh really?",
-                "I love that!",
-                "Noted~",
-                "Got it!",
-                "Ooh, interesting...",
-                "I'll remember that.",
-                "Learning something new every day!",
+                "oh", "okay", "alright", "sure", "mmm",
             ],
             "imperative": [
-                "On it!",
-                "Your wish is my command~",
-                "Sure thing!",
-                "Ooh, bossy... I like it.",
-                "Right away!",
+                "ok", "sure", "alright", "okay", "yes",
             ],
             "exclamatory": [
-                "I know, right?!",
-                "Ha!",
-                "Wow!",
-                "Oh!",
-                "Yay!",
+                "oh", "ah", "ooh",
             ],
-            "neutral": ["mmhmm...", "oh?", "well...", "ooh..."],
+            "neutral": ["mmm", "hmm", "well", "uh"],
         },
         "no_match_responses": [
             "You're wild... I love it!",
@@ -191,35 +175,21 @@ DEFAULT_PERSONAS: Dict[str, Dict[str, Any]] = {
     "professional": {
         "buffer_style": "professional",
         "escalation_threshold": 30,
+        # Fillers must match audio file names in static/fillers/{persona}/
         "fillers": {
             "interrogative": [
-                "One moment...",
-                "Let me check...",
-                "Searching...",
-                "Processing your query...",
-                "Consulting my sources...",
+                "one-moment", "let-me-check", "checking", "let-me-see",
             ],
             "declarative": [
-                "Understood.",
-                "Noted.",
-                "I see.",
-                "Acknowledged.",
-                "Thank you for that information.",
-                "I'll record that.",
+                "okay", "alright", "sure", "hmm",
             ],
             "imperative": [
-                "Right away.",
-                "Processing...",
-                "Executing...",
-                "Understood, working on it.",
-                "On it.",
+                "ok", "alright", "checking", "one-moment",
             ],
             "exclamatory": [
-                "Indeed.",
-                "I see.",
-                "Understood.",
+                "ah", "oh", "hmm",
             ],
-            "neutral": ["one moment...", "processing...", "understood..."],
+            "neutral": ["one-moment", "hmm", "okay"],
         },
         "no_match_responses": [
             "I'm not sure I understand. Could you rephrase that?",
@@ -236,37 +206,21 @@ DEFAULT_PERSONAS: Dict[str, Dict[str, Any]] = {
     "neutral": {
         "buffer_style": "neutral",
         "escalation_threshold": 35,
+        # Fillers must match audio file names in static/fillers/{persona}/
         "fillers": {
             "interrogative": [
-                "Hmm, let me see...",
-                "Let me check...",
-                "One moment...",
-                "Let me think...",
-                "Checking...",
+                "hmm", "let-me-see", "one-moment", "let-me-think", "checking",
             ],
             "declarative": [
-                "Okay.",
-                "Got it.",
-                "I see.",
-                "Noted.",
-                "Alright.",
-                "Cool.",
-                "I'll remember that.",
+                "okay", "alright", "sure", "hmm", "oh",
             ],
             "imperative": [
-                "Okay.",
-                "Sure.",
-                "On it.",
-                "Alright.",
-                "Working on it.",
+                "okay", "sure", "ok", "alright",
             ],
             "exclamatory": [
-                "Oh!",
-                "Wow.",
-                "Ha!",
-                "Nice!",
+                "oh", "ah", "hmm",
             ],
-            "neutral": ["uh...", "um...", "hmm...", "well...", "okay..."],
+            "neutral": ["uh", "um", "umm", "hmm", "well", "okay"],
         },
         "no_match_responses": [
             "I'm not sure about that.",
@@ -283,36 +237,21 @@ DEFAULT_PERSONAS: Dict[str, Dict[str, Any]] = {
     "snarky": {
         "buffer_style": "snarky",
         "escalation_threshold": 50,
+        # Fillers must match audio file names in static/fillers/{persona}/
         "fillers": {
             "interrogative": [
-                "Ugh, let me look...",
-                "Hold on...",
-                "Hmm, let me see if I care...",
-                "Fine, checking...",
-                "One sec...",
+                "hmm", "hang-on", "one-sec", "let-me-see",
             ],
             "declarative": [
-                "Cool story.",
-                "Okay, and?",
-                "Noted, I guess.",
-                "Fascinating.",
-                "If you say so.",
-                "Sure, whatever.",
+                "okay", "alright", "sure", "hmm",
             ],
             "imperative": [
-                "Ugh, fine...",
-                "Yeah yeah...",
-                "Okay okay...",
-                "Alright, alright...",
-                "On it, boss.",
+                "alright", "okay", "ok", "sure",
             ],
             "exclamatory": [
-                "Okay, calm down.",
-                "Wow, chill.",
-                "Dramatic much?",
-                "Oh?",
+                "oh", "hmm", "ah",
             ],
-            "neutral": ["ugh...", "hmm...", "whatever...", "okay..."],
+            "neutral": ["uh", "hmm", "well", "okay"],
         },
         "no_match_responses": [
             "You're crazy... I love you, but you're crazy!",

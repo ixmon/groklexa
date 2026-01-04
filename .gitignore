@@ -47,6 +47,13 @@ certs/*.pem
 config/api_settings.json
 !config/api_settings.example.json
 
+# Persona-specific databases and local config
+config/*.db
+config/thinking_rag.json
+
+# Filler audio files (generated per-persona with local TTS)
+static/fillers/
+
 # Voice samples (may have copyright issues)
 static/voices/*.wav
 static/voices/*.mp3
