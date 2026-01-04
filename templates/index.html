@@ -1379,6 +1379,14 @@
                             <span class="tool-desc">Route tool calls to xAI for reliable execution</span>
                         </span>
                     </label>
+                    
+                    <label class="tool-toggle">
+                        <input type="checkbox" id="toolDeterministicHinting">
+                        <span class="tool-info">
+                            <span class="tool-name">🎯 Deterministic Tool Hinting</span>
+                            <span class="tool-desc">Only expose tools when query clearly matches (for low-param models)</span>
+                        </span>
+                    </label>
                 </div>
                 <button class="btn-save-prompt" id="saveToolsBtn">Save Tools</button>
             </details>
@@ -2712,6 +2720,14 @@
                 currentAbortController = null;
             }
             
+            // Stop pending UTH tasks and clear queue
+            if (window.PendingTaskPoller) {
+                PendingTaskPoller.stop();
+            }
+            if (window.PendingUTHResults) {
+                PendingUTHResults.clear();
+            }
+            
             // Stop browser transcription if running
             stopBrowserTranscription();
             
@@ -2977,6 +2993,11 @@
                 sileroWasSpeaking = true;
                 sileroSpeechStartTime = Date.now();
                 
+                // Notify pending UTH manager about speech
+                if (window.PendingUTHResults) {
+                    PendingUTHResults.notifySpeech();
+                }
+                
                 // Recorder should already be running and collecting chunks
                 // We just mark the speech start time - chunks are already being collected
                 if (sileroRecorder && sileroRecorder.state === 'recording') {
@@ -3077,6 +3098,11 @@
                     silenceStart = null;
                     speechStartTime = Date.now();
                     
+                    // Notify pending UTH manager about speech
+                    if (window.PendingUTHResults) {
+                        PendingUTHResults.notifySpeech();
+                    }
+
                     vadAudioChunks = [];
                     if (vadMediaRecorder.state === 'inactive') {
                         // Use timeslice of 100ms to collect data periodically
@@ -3645,6 +3671,272 @@
         // Make OutputQueuePlayer globally accessible
         window.OutputQueuePlayer = OutputQueuePlayer;
 
+        // ========== PENDING TASK POLLER ==========
+        // Polls for background UTH task completion - supports MULTIPLE concurrent tasks
+        
+        const PendingTaskPoller = {
+            // Map of taskId -> {callback, interval, startTime}
+            tasks: new Map(),
+            pollIntervalMs: 500,
+            maxPollTime: 60000,  // 60 seconds max per task (X searches can be slow)
+            
+            // Start polling for a pending task (supports multiple concurrent tasks)
+            startPolling(taskId, onComplete) {
+                console.log(`[TaskPoller] Starting poll for task ${taskId} (${this.tasks.size} other tasks active)`);
+                
+                // Store task info
+                const taskInfo = {
+                    callback: onComplete,
+                    startTime: Date.now(),
+                    interval: null
+                };
+                
+                // Start polling interval for this specific task
+                taskInfo.interval = setInterval(() => this.pollTask(taskId), this.pollIntervalMs);
+                
+                this.tasks.set(taskId, taskInfo);
+                
+                // Poll immediately
+                this.pollTask(taskId);
+            },
+            
+            // Poll for a specific task's status
+            async pollTask(taskId) {
+                const taskInfo = this.tasks.get(taskId);
+                if (!taskInfo) {
+                    console.warn(`[TaskPoller] Task ${taskId} not found in active tasks`);
+                    return;
+                }
+                
+                // Check timeout
+                if (Date.now() - taskInfo.startTime > this.maxPollTime) {
+                    console.warn(`[TaskPoller] Task ${taskId} timed out`);
+                    const callback = taskInfo.callback;
+                    this.stopTask(taskId);
+                    if (callback) {
+                        callback({ error: 'Task timed out' });
+                    }
+                    return;
+                }
+                
+                try {
+                    const response = await fetch(`/api/task/${taskId}`);
+                    const data = await response.json();
+                    
+                    if (!data.success && data.error) {
+                        console.error(`[TaskPoller] Task ${taskId} error: ${data.error}`);
+                        const callback = taskInfo.callback;
+                        this.stopTask(taskId);
+                        if (callback) {
+                            callback({ error: data.error });
+                        }
+                        return;
+                    }
+                    
+                    if (data.complete) {
+                        console.log(`[TaskPoller] Task ${taskId} complete`);
+                        const callback = taskInfo.callback;
+                        this.stopTask(taskId);
+                        if (callback) {
+                            console.log('[TaskPoller] Invoking callback with response:', data.response?.substring(0, 50));
+                            callback({
+                                response: data.response,
+                                tools_called: data.tools_called || [],
+                                truncated: data.truncated
+                            });
+                        }
+                    }
+                    // Still pending - continue polling
+                } catch (e) {
+                    console.error(`[TaskPoller] Poll error for task ${taskId}:`, e);
+                    // Continue polling on network errors
+                }
+            },
+            
+            // Stop polling for a specific task
+            stopTask(taskId) {
+                const taskInfo = this.tasks.get(taskId);
+                if (taskInfo) {
+                    if (taskInfo.interval) {
+                        clearInterval(taskInfo.interval);
+                    }
+                    this.tasks.delete(taskId);
+                    console.log(`[TaskPoller] Stopped task ${taskId}, ${this.tasks.size} tasks remaining`);
+                }
+            },
+            
+            // Stop all polling (for cleanup)
+            stop() {
+                console.log(`[TaskPoller] Stopping all ${this.tasks.size} tasks`);
+                for (const [taskId, taskInfo] of this.tasks) {
+                    if (taskInfo.interval) {
+                        clearInterval(taskInfo.interval);
+                    }
+                }
+                this.tasks.clear();
+            },
+            
+            // Check if currently polling any tasks
+            isPolling() {
+                return this.tasks.size > 0;
+            },
+            
+            // Get count of active tasks
+            activeCount() {
+                return this.tasks.size;
+            }
+        };
+        
+        // Make globally accessible
+        window.PendingTaskPoller = PendingTaskPoller;
+
+        // ========== PENDING UTH RESULTS MANAGER ==========
+        // Queues UTH results and plays them when there's a natural pause
+        
+        const PendingUTHResults = {
+            queue: [],  // Array of {response, tools_called, transcription}
+            checkInterval: null,
+            checkIntervalMs: 300,  // Check every 300ms for silence
+            silenceRequiredMs: 1500,  // Need 1.5s of silence before interjecting
+            lastSpeechTime: Date.now(),
+            lastSynthesisTime: Date.now(),
+            isPlaying: false,
+            
+            // Add a result to the queue (LIFO - most recent first for natural conversation)
+            enqueue(result) {
+                console.log('[UTHQueue] Enqueueing result (front of queue):', result.response?.substring(0, 50));
+                // Add to FRONT of queue so most recent questions get answered first
+                this.queue.unshift(result);
+                this.startChecking();
+            },
+            
+            // Start checking for silence
+            startChecking() {
+                if (this.checkInterval) return;  // Already checking
+                
+                console.log('[UTHQueue] Starting silence monitoring');
+                this.checkInterval = setInterval(() => this.checkAndPlay(), this.checkIntervalMs);
+            },
+            
+            // Stop checking
+            stopChecking() {
+                if (this.checkInterval) {
+                    clearInterval(this.checkInterval);
+                    this.checkInterval = null;
+                }
+            },
+            
+            // Update last speech time (called by VAD)
+            notifySpeech() {
+                this.lastSpeechTime = Date.now();
+            },
+            
+            // Update last synthesis time (called when TTS plays)
+            notifySynthesis() {
+                this.lastSynthesisTime = Date.now();
+            },
+            
+            // Check if it's a good time to interject and play queued result
+            async checkAndPlay() {
+                if (this.queue.length === 0) {
+                    this.stopChecking();
+                    return;
+                }
+                
+                if (this.isPlaying) return;  // Already playing something
+                if (isProcessing) return;  // Main processing is happening
+                if (OutputQueuePlayer.isPlaying) return;  // Output queue is playing
+                
+                const now = Date.now();
+                const silenceDuration = Math.min(
+                    now - this.lastSpeechTime,
+                    now - this.lastSynthesisTime
+                );
+                
+                if (silenceDuration >= this.silenceRequiredMs) {
+                    console.log(`[UTHQueue] Silence detected (${silenceDuration}ms), playing queued result`);
+                    await this.playNext();
+                }
+            },
+            
+            // Play the next queued result
+            async playNext() {
+                if (this.queue.length === 0) return;
+                
+                const result = this.queue.shift();
+                this.isPlaying = true;
+                
+                try {
+                    const { response, tools_called, transcription } = result;
+                    
+                    console.log('[UTHQueue] Playing queued UTH result:', response?.substring(0, 50));
+                    
+                    // Show in results panel
+                    if (transcription) {
+                        showResult({
+                            transcription: transcription,
+                            ai_response_text: response,
+                            tools_called: tools_called || []
+                        });
+                    }
+                    
+                    // Show tools if any
+                    if (tools_called?.length > 0) {
+                        console.log('[UTHQueue] Tools called:', tools_called);
+                        showStatus(`🔧 ${tools_called.join(', ')}`, 'info');
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+                    
+                    // Play the response
+                    playFileEarcon('speaking');
+                    showStatus('🔊 Speaking...', 'speaking');
+                    this.notifySynthesis();
+                    
+                    const synthConfig = currentApiConfig?.synthesis;
+                    const CHUNK_THRESHOLD = 300;
+                    
+                    if (response.length > CHUNK_THRESHOLD && synthConfig?.provider !== 'browser') {
+                        await OutputQueuePlayer.queueAndPlay(response);
+                    } else if (synthConfig?.provider === 'browser') {
+                        await synthesizeWithWebSpeech(response);
+                    } else if (synthConfig?.provider === 'edge_tts' || synthConfig?.provider === 'openai_tts' || synthConfig?.provider === 'chatterbox') {
+                        await synthesizeWithServer(response);
+                    } else {
+                        await synthesizeWithWebSpeech(response);
+                    }
+                    
+                    showStatus('Success!', 'success');
+                    
+                } catch (e) {
+                    console.error('[UTHQueue] Error playing result:', e);
+                    showStatus('Error playing result', 'error');
+                } finally {
+                    this.isPlaying = false;
+                    this.notifySynthesis();  // Update time after synthesis
+                    
+                    // If there are more results, keep checking
+                    if (this.queue.length > 0) {
+                        this.startChecking();
+                    }
+                }
+            },
+            
+            // Clear all pending results
+            clear() {
+                this.queue = [];
+                this.stopChecking();
+                this.isPlaying = false;
+            },
+            
+            // Check if there are pending results
+            hasPending() {
+                return this.queue.length > 0;
+            }
+        };
+        
+        // Make globally accessible
+        window.PendingUTHResults = PendingUTHResults;
+
         // ========== AUDIO PROCESSING ==========
         
         async function processAudioBlob(blob) {
@@ -3800,9 +4092,10 @@
                     throw new Error(data.error || 'Inference failed');
                 }
                 
-                const aiResponse = data.response;
-                const toolsCalled = data.tools_called || [];
+                let aiResponse = data.response;
+                let toolsCalled = data.tools_called || [];
                 const memoryFlair = data.memory_flair || {};
+                const pendingTaskId = data.pending_task_id;
                 
                 // Update timing estimates
                 if (data.timing) {
@@ -3826,6 +4119,79 @@
                 // Stop any playing filler chain - response arrived!
                 stopFillerChain();
                 
+                // =====================================================
+                // PARALLEL UTH: Non-blocking - play ack, queue UTH result
+                // for playback when there's a natural pause
+                // =====================================================
+                if (pendingTaskId) {
+                    console.log(`[Groklexa] Non-blocking UTH: task ${pendingTaskId}, ack: "${aiResponse}"`);
+                    
+                    if (data.tools_pending?.length > 0) {
+                        showStatus(`🔧 ${data.tools_pending.join(', ')}...`, 'info');
+                    }
+                    
+                    // Show ack in results
+                    showResult({
+                        transcription: transcription,
+                        ai_response_text: aiResponse + ' (looking up...)',
+                        tools_called: [],
+                        pending: true
+                    });
+                    
+                    // Play the acknowledgment (awaited - we want this to finish)
+                    const synthConfig = currentApiConfig?.synthesis;
+                    playFileEarcon('speaking');
+                    showStatus('🔊 Speaking...', 'speaking');
+                    PendingUTHResults.notifySynthesis();
+                    
+                    console.log('[Groklexa] Playing ack, then returning control...');
+                    if (synthConfig?.provider === 'browser') {
+                        await synthesizeWithWebSpeech(aiResponse);
+                    } else if (synthConfig?.provider === 'edge_tts' || synthConfig?.provider === 'openai_tts' || synthConfig?.provider === 'chatterbox') {
+                        await synthesizeWithServer(aiResponse);
+                    } else {
+                        await synthesizeWithWebSpeech(aiResponse);
+                    }
+                    
+                    PendingUTHResults.notifySynthesis();
+                    console.log('[Groklexa] Ack complete, setting up background UTH listener');
+                    
+                    // Set up polling with callback that enqueues result (NON-BLOCKING)
+                    // Store transcription for when result comes back
+                    const originalTranscription = transcription;
+                    
+                    PendingTaskPoller.startPolling(pendingTaskId, (taskResult) => {
+                        console.log('[Groklexa] UTH task completed in background:', taskResult?.response?.substring(0, 50));
+                        
+                        if (!taskResult || taskResult.error) {
+                            console.error('[Groklexa] UTH task failed:', taskResult?.error || 'No result');
+                            showStatus('Tool lookup failed', 'error');
+                        } else if (!taskResult.response) {
+                            console.error('[Groklexa] UTH task returned empty response');
+                        } else {
+                            // Enqueue the result - it will play when there's silence
+                            PendingUTHResults.enqueue({
+                                response: taskResult.response,
+                                tools_called: taskResult.tools_called || [],
+                                transcription: originalTranscription
+                            });
+                            
+                            // Show a subtle indicator that result is ready
+                            if (!isProcessing && !OutputQueuePlayer.isPlaying) {
+                                showStatus('💬 Result ready...', 'info');
+                            }
+                        }
+                    });
+                    
+                    // Return control immediately - user can continue talking!
+                    showStatus('🎧 Listening... (tool lookup in progress)', 'listening');
+                    console.log('[Groklexa] Control returned to user, UTH running in background');
+                    return;  // Exit early - UTH result will be queued when ready
+                }
+                
+                // =====================================================
+                // NORMAL FLOW: No pending task, handle response directly
+                // =====================================================
                 console.log('[Groklexa] AI Response:', aiResponse.substring(0, 100) + '...');
                 if (toolsCalled.length > 0) {
                     console.log('[Groklexa] Tools called:', toolsCalled);
@@ -3873,6 +4239,8 @@
                 
             } catch (error) {
                 stopFillerChain();  // Stop fillers on error
+                PendingTaskPoller.stop();  // Stop any pending task polling
+                // Note: Don't clear PendingUTHResults on error - let queued results still play
                 if (error.name === 'AbortError') {
                     console.log('[Groklexa] Request aborted');
                     showStatus('Stopped', 'info');
@@ -3883,6 +4251,8 @@
             } finally {
                 currentAbortController = null;
                 isProcessing = false;
+                // NOTE: Don't stop PendingTaskPoller here - non-blocking UTH tasks
+                // may still be running and should continue in background
                 
                 // Check if we need to resume queue playback after a short interjection
                 if (OutputQueuePlayer.pendingResume) {
@@ -4037,6 +4407,11 @@
         async function synthesizeWithServer(text) {
             console.log('[Groklexa] Calling server synthesis API');
             
+            // Notify pending UTH manager about synthesis
+            if (window.PendingUTHResults) {
+                PendingUTHResults.notifySynthesis();
+            }
+            
             const response = await fetch('/api/synthesize', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -4108,6 +4483,12 @@
                                 startBrowserTranscription();
                             }
                             console.log('[Groklexa] Server audio complete - resuming VAD & transcription (echo delay applied)');
+                            
+                            // Notify pending UTH manager that synthesis ended
+                            if (window.PendingUTHResults) {
+                                PendingUTHResults.notifySynthesis();
+                            }
+                            
                             // Don't revoke URL - keep it for the sidebar player
                             resolve();
                         }, 300);  // 300ms delay for echo to fade
@@ -4130,6 +4511,11 @@
         
         // Browser-based speech synthesis
         function synthesizeWithWebSpeech(text) {
+            // Notify pending UTH manager about synthesis
+            if (window.PendingUTHResults) {
+                PendingUTHResults.notifySynthesis();
+            }
+            
             return new Promise((resolve, reject) => {
                 if (!('speechSynthesis' in window)) {
                     reject(new Error('Speech synthesis not supported'));
@@ -4187,6 +4573,11 @@
                             startBrowserTranscription();
                         }
                         console.log('[Groklexa] Browser synthesis ended - echo delay applied');
+                        
+                        // Notify pending UTH manager that synthesis ended
+                        if (window.PendingUTHResults) {
+                            PendingUTHResults.notifySynthesis();
+                        }
                     }, 300);  // 300ms delay for echo to fade
                     console.log('[Groklexa] Speech synthesis complete - resuming VAD & transcription (buffer cleared)');
                     resolve();
@@ -4251,6 +4642,7 @@
         const toolSearchX = document.getElementById('toolSearchX');
         const toolSearchWeb = document.getElementById('toolSearchWeb');
         const toolUTH = document.getElementById('toolUTH');
+        const toolDeterministicHinting = document.getElementById('toolDeterministicHinting');
         
         let currentPersonaId = 'default';
         
@@ -4403,11 +4795,14 @@
                     auth: '',  // Uses escalation auth or env var
                     model: 'grok-3-fast'
                 };
+                
+                // Deterministic tool hinting (for low-param models)
+                const deterministic_tool_hinting = toolDeterministicHinting.checked;
 
                 const response = await fetch(`/api/personas/${currentPersonaId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tools, universal_tool_handler })
+                    body: JSON.stringify({ tools, universal_tool_handler, deterministic_tool_hinting })
                 });
                 
                 const data = await response.json();
@@ -4862,6 +5257,10 @@
                         toolUTH.checked = false;
                     }
                     
+                    // Load Deterministic Tool Hinting setting
+                    toolDeterministicHinting.checked = config.deterministic_tool_hinting === true;
+                    console.log('[Groklexa] Loaded deterministic tool hinting:', toolDeterministicHinting.checked);
+
                     // Set mode
                     if (config.mode === 'separate') {
                         apiModeSeparate.checked = true;

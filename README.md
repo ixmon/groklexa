@@ -10,6 +10,8 @@ Groklexa is built around the principle of **intelligent orchestration** between 
 
 - **Privacy-first**: Wake word detection and voice activity detection run 100% client-side - no audio leaves your device until you explicitly speak after activation
 - **Hybrid inference**: Run fast local models (Ollama, llama.cpp) for quick responses, with automatic escalation to cloud models (Grok, GPT-4) for complex reasoning
+- **Universal Tool Handler (UTH)**: Intercept tool calls from lightweight models and route them to capable cloud models for reliable execution - runs asynchronously so conversation stays responsive
+- **Deterministic Tool Hinting**: Pattern-based tool exposure for low-parameter models - keeps the model in "conversation mode" unless the query clearly needs a tool
 - **Deterministic decisions**: A lightweight expert system (`memory_flair`) makes sub-10ms routing decisions without LLM inference
 - **Local tool calling**: Weather, timers, system info, and datetime run entirely on-device
 - **Cloud escalation**: X search, web search, and deep thinking offload to cloud APIs only when explicitly needed
@@ -162,14 +164,15 @@ For maximum performance on edge devices, [llama.cpp](https://github.com/ggergano
 
 | Model | Size | Tool Calling | Best For |
 |-------|------|--------------|----------|
+| `gemma3:4b` | ~3GB | ✅ Yes* | Fast, creative, great with UTH |
 | `llama3.2:3b` | ~2GB | ✅ Yes | Fast responses with tool support |
 | `mistral:7b` | ~4GB | ✅ Yes | Balanced quality + tools |
 | `qwen3:32b-q4_K_M` | ~20GB | ✅ Yes | High quality reasoning + tools |
 | `dolphin-llama3:8b` | ~5GB | ❌ No | Best conversation quality, characters |
 
-**Recommended: `llama3.2:3b`** for tool calling support, or `dolphin-llama3:8b` for pure conversation quality.
+**Recommended: `gemma3:4b`** for creative personas with Universal Tool Handler, or `dolphin-llama3:8b` for pure conversation quality.
 
-> **Note:** Tool support is model-dependent. If a model doesn't support tools, Groklexa automatically falls back to conversation-only mode.
+> **Note:** Tool support is model-dependent. Low-parameter models may be "trigger-happy" with tools - enable **Deterministic Tool Hinting** to only expose tools when the query clearly needs them. The **Universal Tool Handler (UTH)** can reliably execute tool calls from any model by routing them to a capable cloud model.
 
 ## Local Tool Calling
 
@@ -188,6 +191,54 @@ Groklexa includes several tools that run entirely on-device:
 *Weather uses Open-Meteo API which is free and requires no registration.
 
 Tools can be enabled/disabled per-persona for privacy control.
+
+## Universal Tool Handler (UTH)
+
+The Universal Tool Handler solves a key problem with edge AI: **small local models often can't reliably execute tool calls**, but they're fast and have great personality.
+
+### How It Works
+
+1. **Local model generates intent** - Your fast 3-4B model decides "I should search X"
+2. **UTH intercepts** - Instead of the local model executing the tool, UTH routes it to a capable cloud model (Grok)
+3. **Non-blocking execution** - The conversation continues immediately while UTH works in the background
+4. **Natural interjection** - When results are ready, they're spoken during a natural pause in conversation
+
+### Configuration
+
+Enable UTH per-persona in the Tools section:
+- **🔀 Universal Tool Handler** - Route tool calls to xAI for reliable execution
+
+### Benefits
+
+- Use creative, personality-rich local models (gemma3, dolphin) without sacrificing tool reliability
+- Conversation stays responsive - no waiting 30+ seconds for X searches
+- Results arrive naturally, like a friend who looked something up while you kept talking
+
+## Deterministic Tool Hinting
+
+Low-parameter models can be "trigger-happy" with tools when they see them in the prompt. **Deterministic Tool Hinting** keeps the model in pure conversation mode unless the query clearly needs a tool.
+
+### How It Works
+
+1. Query is analyzed against regex patterns (sub-10ms, no LLM)
+2. Only matching tools are exposed to the model
+3. No pattern match = no tools exposed (pure conversation mode)
+
+### Example Patterns
+
+| User says... | Tool exposed |
+|--------------|--------------|
+| "Search X for news about..." | `search_x` |
+| "Set a timer for 5 minutes" | `set_timer` |
+| "What's the weather in..." | `get_current_weather` |
+| "Tell me a joke" | *(none - pure conversation)* |
+
+### Configuration
+
+Enable per-persona in the Tools section:
+- **🎯 Deterministic Tool Hinting** - Only expose tools when query clearly matches
+
+This is especially useful for models like `gemma3:4b` that are creative and personality-rich but can over-call tools when they're visible.
 
 ## Project Structure
 

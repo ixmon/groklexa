@@ -18,6 +18,8 @@ from .memory_flair import (
     truncate_for_speech,
     SHORT_INTERJECTIONS,
     THOUGHT_RECALL_TRIGGERS,
+    detect_tool_hints,
+    TOOL_HINT_PATTERNS,
 )
 
 __all__ = [
@@ -33,6 +35,8 @@ __all__ = [
     "truncate_for_speech",
     "SHORT_INTERJECTIONS",
     "THOUGHT_RECALL_TRIGGERS",
+    "detect_tool_hints",
+    "TOOL_HINT_PATTERNS",
 ]
 
 

@@ -16,7 +16,7 @@ import requests
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from groklexa import XAIVoiceWebSocketWrapper
-from lib.memory_flair import MemoryFlair, EscalationPlan, truncate_for_speech
+from lib.memory_flair import MemoryFlair, EscalationPlan, truncate_for_speech, detect_tool_hints
 
 # Configure logging
 logging.basicConfig(
@@ -195,6 +195,86 @@ def get_timing_estimates() -> dict:
             'synthesis_ms': int(_timing_stats['synthesis']['avg']),
             'total_ms': int(sum(s['avg'] for s in _timing_stats.values())),
         }
+
+
+# ============================================================================
+# PENDING TASK QUEUE (for parallel UTH execution)
+# ============================================================================
+# Stores background UTH tasks: task_id -> {status, result, created_at, ...}
+_pending_tasks: dict = {}
+_pending_tasks_lock = threading.Lock()
+TASK_CLEANUP_INTERVAL = 30  # seconds
+TASK_MAX_AGE = 60  # seconds - tasks older than this are cleaned up
+
+
+def create_pending_task() -> str:
+    """Create a new pending task and return its ID."""
+    task_id = str(uuid.uuid4())[:8]
+    with _pending_tasks_lock:
+        _pending_tasks[task_id] = {
+            'status': 'pending',
+            'result': None,
+            'tools_called': [],
+            'created_at': time.time(),
+            'error': None
+        }
+    logger.info(f"[TaskQueue] Created pending task: {task_id}")
+    return task_id
+
+
+def complete_pending_task(task_id: str, result: str, tools_called: list = None):
+    """Mark a pending task as complete with its result."""
+    with _pending_tasks_lock:
+        if task_id in _pending_tasks:
+            _pending_tasks[task_id]['status'] = 'complete'
+            _pending_tasks[task_id]['result'] = result
+            _pending_tasks[task_id]['tools_called'] = tools_called or []
+            _pending_tasks[task_id]['completed_at'] = time.time()
+            logger.info(f"[TaskQueue] Task {task_id} completed")
+
+
+def fail_pending_task(task_id: str, error: str):
+    """Mark a pending task as failed."""
+    with _pending_tasks_lock:
+        if task_id in _pending_tasks:
+            _pending_tasks[task_id]['status'] = 'failed'
+            _pending_tasks[task_id]['error'] = error
+            logger.error(f"[TaskQueue] Task {task_id} failed: {error}")
+
+
+def get_pending_task(task_id: str) -> dict:
+    """Get the current state of a pending task."""
+    with _pending_tasks_lock:
+        return _pending_tasks.get(task_id)
+
+
+def cleanup_stale_tasks():
+    """Remove tasks older than TASK_MAX_AGE."""
+    now = time.time()
+    with _pending_tasks_lock:
+        stale_ids = [
+            tid for tid, task in _pending_tasks.items()
+            if now - task['created_at'] > TASK_MAX_AGE
+        ]
+        for tid in stale_ids:
+            del _pending_tasks[tid]
+        if stale_ids:
+            logger.info(f"[TaskQueue] Cleaned up {len(stale_ids)} stale tasks")
+
+
+def _task_cleanup_loop():
+    """Background thread to clean up stale tasks periodically."""
+    while True:
+        time.sleep(TASK_CLEANUP_INTERVAL)
+        try:
+            cleanup_stale_tasks()
+        except Exception as e:
+            logger.error(f"[TaskQueue] Cleanup error: {e}")
+
+
+# Start the cleanup thread
+_task_cleanup_thread = threading.Thread(target=_task_cleanup_loop, daemon=True)
+_task_cleanup_thread.start()
 
 
 # Filler phrases for different wait durations
@@ -794,6 +874,57 @@ def get_timing():
     except Exception as e:
         logger.error(f"Error getting timing: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/task/<task_id>', methods=['GET'])
+def get_task_status(task_id):
+    """
+    Get the status of a pending background task (e.g., parallel UTH).
+    
+    Returns:
+        - complete: false if still pending
+        - complete: true with response if finished
+        - error if task failed or not found
+    """
+    task = get_pending_task(task_id)
+    
+    if not task:
+        return jsonify({
+            'success': False,
+            'error': 'Task not found or expired'
+        }), 404
+    
+    if task['status'] == 'pending':
+        return jsonify({
+            'success': True,
+            'complete': False,
+            'task_id': task_id
+        })
+    
+    if task['status'] == 'failed':
+        return jsonify({
+            'success': False,
+            'complete': True,
+            'error': task.get('error', 'Unknown error')
+        })
+    
+    # Task completed successfully
+    response_text = task['result']
+    
+    # Truncate for voice mode
+    original_length = len(response_text) if response_text else 0
+    response_text, was_truncated = truncate_for_speech(response_text or '', target_chars=350, tolerance=75)
+    if was_truncated:
+        logger.info(f"[Task {task_id}] Truncated response: {original_length} -> {len(response_text)} chars")
+    
+    return jsonify({
+        'success': True,
+        'complete': True,
+        'task_id': task_id,
+        'response': response_text,
+        'tools_called': task.get('tools_called', []),
+        'truncated': was_truncated
+    })
 
 
 @app.route('/api/fillers/generate', methods=['POST'])
@@ -1858,6 +1989,34 @@ def infer_text():
         inference_ms = (time.time() - t_infer_start) * 1000
         record_timing('inference', inference_ms)
         
+        # Check if this is a pending task response (parallel UTH)
+        if isinstance(response_text, dict) and 'pending_task_id' in response_text:
+            # Parallel UTH mode: return ack immediately, client will poll for result
+            pending_info = response_text
+            logger.info(f"[UTH] Returning pending task {pending_info['pending_task_id']} with ack: {pending_info['ack_response']}")
+            
+            return jsonify({
+                'success': True,
+                'response': pending_info['ack_response'],
+                'pending_task_id': pending_info['pending_task_id'],
+                'tools_pending': pending_info.get('tools_pending', []),
+                'tools_called': [],  # Tools are still running
+                'truncated': False,
+                'memory_flair': {
+                    'state': escalation_plan.state,
+                    'tiers': escalation_plan.selected_tiers,
+                    'score': escalation_plan.escalation_score,
+                    'earcon': 'tool_calling',  # Use tool calling earcon
+                    'filler': escalation_plan.filler,
+                    'deterministic': False,
+                    'max_wait': escalation_plan.max_wait_seconds
+                },
+                'timing': {
+                    'inference_ms': int(inference_ms),
+                    'estimates': get_timing_estimates()
+                }
+            })
+        
         logger.info(f"Inference response ({inference_ms:.0f}ms): {response_text[:100]}...")
         
         # Truncate long responses at natural break points for voice mode
@@ -2129,11 +2288,33 @@ def call_openai_compatible(
     default_permissions = {name: True for name in all_tools.keys()}
     merged_permissions = {**default_permissions, **(tool_permissions or {})}
     
+    # Check for deterministic tool hinting (for low-param models)
+    # When enabled, only expose tools when query patterns clearly indicate tool intent
+    deterministic_hinting = persona_config.get('deterministic_tool_hinting', False) if persona_config else False
+    
     tools = None
-    enabled_tools = [all_tools[name] for name, enabled in merged_permissions.items() if enabled and name in all_tools]
-    if enabled_tools:
-        tools = enabled_tools
-        logger.debug(f"Enabled tools: {[t['function']['name'] for t in tools]}")
+    if deterministic_hinting:
+        # Analyze query for tool intent - only expose matching tools
+        hinted_tools = detect_tool_hints(original_query or '')
+        if hinted_tools:
+            logger.info(f"[Deterministic Hinting] Query matched tools: {hinted_tools}")
+            # Only include tools that are both hinted AND permitted
+            enabled_tools = [
+                all_tools[name] for name in hinted_tools 
+                if name in all_tools and merged_permissions.get(name, True)
+            ]
+            if enabled_tools:
+                tools = enabled_tools
+                logger.debug(f"Exposing hinted tools: {[t['function']['name'] for t in tools]}")
+        else:
+            logger.debug("[Deterministic Hinting] No tool patterns matched - pure conversation mode")
+            # No tools exposed - model stays in conversation mode
+    else:
+        # Standard mode: expose all enabled tools
+        enabled_tools = [all_tools[name] for name, enabled in merged_permissions.items() if enabled and name in all_tools]
+        if enabled_tools:
+            tools = enabled_tools
+            logger.debug(f"Enabled tools: {[t['function']['name'] for t in tools]}")
     
     payload = {
         'model': model,
@@ -2208,21 +2389,70 @@ def call_openai_compatible(
         # =====================================================================
         # UNIVERSAL TOOL HANDLER INTERCEPTION
         # If enabled, route tool calls to a more capable model (xAI)
+        # Now runs in parallel: returns ack immediately, UTH runs in background
         # =====================================================================
         if uth_enabled and iteration == 0:
-            logger.info(f"[UTH] Intercepting tool call from primary model")
-            uth_result = handle_with_universal_tool_handler(
-                original_query=original_query or messages[-1].get('content', ''),
-                messages=messages,
-                attempted_tool_calls=tool_calls,
-                tool_permissions=tool_permissions or {},
-                persona_config=persona_config or {},
-                persona_name=persona_name or 'default'
-            )
-            if uth_result:
-                return uth_result
-            # If UTH failed, fall through to let primary model handle it
-            logger.warning("[UTH] Handler failed, falling back to primary model")
+            tool_names = [tc['function']['name'] for tc in tool_calls]
+            logger.info(f"[UTH] Intercepting tool call from primary model: {tool_names}")
+            
+            # Check if parallel UTH is enabled (default: True when UTH is enabled)
+            parallel_uth = uth_config.get('parallel', True)
+            
+            if parallel_uth:
+                # PARALLEL MODE: Generate ack, spawn background task, return immediately
+                logger.info(f"[UTH] Parallel mode: spawning background task")
+                
+                # Generate acknowledgment from the small model
+                ack_response = generate_tool_acknowledgment(
+                    url=url,
+                    auth=auth,
+                    model=model,
+                    tool_names=tool_names,
+                    original_query=original_query or messages[-1].get('content', '')
+                )
+                
+                # Create pending task
+                task_id = create_pending_task()
+                
+                # Track the tools being called
+                _current_inference_tools.extend(tool_names)
+                
+                # Spawn background thread for UTH
+                uth_thread = threading.Thread(
+                    target=run_uth_background,
+                    args=(
+                        task_id,
+                        original_query or messages[-1].get('content', ''),
+                        messages.copy(),  # Copy to avoid mutation
+                        tool_calls,
+                        tool_permissions or {},
+                        persona_config or {},
+                        persona_name or 'default'
+                    ),
+                    daemon=True
+                )
+                uth_thread.start()
+                
+                # Return special dict indicating pending task
+                return {
+                    'pending_task_id': task_id,
+                    'ack_response': ack_response,
+                    'tools_pending': tool_names
+                }
+            else:
+                # BLOCKING MODE: Original behavior
+                uth_result = handle_with_universal_tool_handler(
+                    original_query=original_query or messages[-1].get('content', ''),
+                    messages=messages,
+                    attempted_tool_calls=tool_calls,
+                    tool_permissions=tool_permissions or {},
+                    persona_config=persona_config or {},
+                    persona_name=persona_name or 'default'
+                )
+                if uth_result:
+                    return uth_result
+                # If UTH failed, fall through to let primary model handle it
+                logger.warning("[UTH] Handler failed, falling back to primary model")
         
         tool_names = [tc['function']['name'] for tc in tool_calls]
         logger.info(f"Tool calls requested (iteration {iteration + 1}): {tool_names}")
@@ -2273,6 +2503,127 @@ def call_openai_compatible(
 # ============================================================================
 # UNIVERSAL TOOL HANDLER
 # ============================================================================
+
+def generate_tool_acknowledgment(
+    url: str,
+    auth: str,
+    model: str,
+    tool_names: list,
+    original_query: str
+) -> str:
+    """
+    Ask the small model to generate a brief acknowledgment for a tool call.
+    
+    This is called when we're about to spawn a background UTH task, so the
+    user gets immediate feedback while the real work happens in parallel.
+    
+    Args:
+        url: API endpoint URL
+        auth: API key
+        model: Model name (small/fast model)
+        tool_names: List of tool names being called
+        original_query: The user's original question
+        
+    Returns:
+        A brief acknowledgment string like "Let me check that..."
+    """
+    # Build a simple prompt to generate the ack
+    tool_descriptions = {
+        'get_current_datetime': 'checking the time',
+        'get_current_weather': 'checking the weather',
+        'search_x': 'searching X',
+        'search_web': 'searching the web',
+        'set_timer': 'setting a timer',
+        'list_timers': 'checking your timers',
+        'cancel_timer': 'canceling the timer',
+        'get_system_info': 'checking system status',
+        'escalate_thinking': 'thinking deeply about this',
+    }
+    
+    # Get human-readable description of what we're doing
+    actions = [tool_descriptions.get(t, f'using {t}') for t in tool_names]
+    action_text = ', '.join(actions[:2])  # Limit to first 2 tools
+    
+    ack_prompt = f"""The user asked: "{original_query}"
+
+You're about to {action_text}. Generate a brief, natural acknowledgment (ONE short sentence, under 10 words) letting them know you're working on it. Be conversational and match your personality. Examples: "Let me check that for you", "One sec, looking that up", "Checking on that now".
+
+Respond with ONLY the acknowledgment, nothing else."""
+
+    headers = {'Authorization': f'Bearer {auth}', 'Content-Type': 'application/json'}
+    payload = {
+        'model': model,
+        'messages': [{'role': 'user', 'content': ack_prompt}],
+        'max_tokens': 30,  # Keep it short
+        'temperature': 0.7,
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        ack = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+        ack = ack.strip().strip('"\'')  # Remove quotes if present
+        
+        # Validate it's reasonable
+        if ack and len(ack) < 100:
+            logger.info(f"[UTH] Generated ack: {ack}")
+            return ack
+    except Exception as e:
+        logger.warning(f"[UTH] Failed to generate ack: {e}")
+    
+    # Fallback to generic ack
+    fallback_acks = {
+        'get_current_weather': "Let me check the weather.",
+        'search_x': "Searching X for that.",
+        'search_web': "Let me look that up.",
+        'get_current_datetime': "Let me check.",
+        'escalate_thinking': "Let me think about that.",
+    }
+    for tool in tool_names:
+        if tool in fallback_acks:
+            return fallback_acks[tool]
+    
+    return "Let me check on that."
+
+
+def run_uth_background(
+    task_id: str,
+    original_query: str,
+    messages: list,
+    attempted_tool_calls: list,
+    tool_permissions: dict,
+    persona_config: dict,
+    persona_name: str
+):
+    """
+    Run the Universal Tool Handler in a background thread.
+    
+    This function is spawned as a daemon thread and stores its result
+    in the pending tasks queue when complete.
+    """
+    try:
+        logger.info(f"[UTH Background] Starting task {task_id}")
+        result = handle_with_universal_tool_handler(
+            original_query=original_query,
+            messages=messages,
+            attempted_tool_calls=attempted_tool_calls,
+            tool_permissions=tool_permissions,
+            persona_config=persona_config,
+            persona_name=persona_name
+        )
+        
+        if result:
+            # Get tools that were called
+            tools_called = list(_current_inference_tools) if _current_inference_tools else []
+            complete_pending_task(task_id, result, tools_called)
+        else:
+            fail_pending_task(task_id, "UTH returned no result")
+            
+    except Exception as e:
+        logger.error(f"[UTH Background] Task {task_id} failed: {e}", exc_info=True)
+        fail_pending_task(task_id, str(e))
+
 
 def handle_with_universal_tool_handler(
     original_query: str,
@@ -2370,8 +2721,31 @@ def handle_with_universal_tool_handler(
             "type": "function",
             "function": {
                 "name": "set_timer",
-                "description": "Set a countdown timer.",
-                "parameters": {"type": "object", "properties": {"duration": {"type": "string"}, "label": {"type": "string"}}, "required": ["duration"]}
+                "description": "Set a countdown timer or reminder. Use for requests like 'set a timer for 5 minutes' or 'remind me in 2 hours'. The timer will announce when complete.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "duration": {"type": "string", "description": "Duration like '5 minutes', '2 hours', '90 seconds'"},
+                        "label": {"type": "string", "description": "Optional label for the timer"}
+                    },
+                    "required": ["duration"]
+                }
+            }
+        },
+        "list_timers": {
+            "type": "function",
+            "function": {
+                "name": "list_timers",
+                "description": "List all active timers and their remaining time.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        "cancel_timer": {
+            "type": "function",
+            "function": {
+                "name": "cancel_timer",
+                "description": "Cancel an active timer by its ID.",
+                "parameters": {"type": "object", "properties": {"timer_id": {"type": "string"}}, "required": ["timer_id"]}
             }
         },
     }

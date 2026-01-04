@@ -359,6 +359,81 @@ QUESTION_TYPES: Dict[str, Tuple[str, str]] = {
 
 
 # ============================================================================
+# DETERMINISTIC TOOL HINTS
+# ============================================================================
+# Maps regex patterns to tool names that should be exposed to the model.
+# When deterministic_tool_hinting is enabled, ONLY tools matching these
+# patterns will be exposed - keeping the model in "conversation mode" otherwise.
+#
+# Format: (regex_pattern, [list_of_tool_names])
+
+TOOL_HINT_PATTERNS: List[Tuple[str, List[str]]] = [
+    # X/Twitter search
+    (r"\b(search|look|check|find|what.*(saying|trending)|anything)\b.*(on\s+)?(x|twitter)\b", ["search_x"]),
+    (r"\b(on\s+)?(x|twitter)\b.*(search|say|trend|post|news)\b", ["search_x"]),
+    (r"\bx\s+search\b", ["search_x"]),
+    
+    # Web search
+    (r"\b(search|look\s+up|google|find|research)\b.*(web|online|internet)\b", ["search_web"]),
+    (r"\b(web|online|internet)\b.*(search|look)\b", ["search_web"]),
+    (r"\bgoogle\s+(this|that|it|for)\b", ["search_web"]),
+    
+    # Timer/reminder
+    (r"\b(set|start|create)\b.*(timer|alarm|reminder|countdown)\b", ["set_timer"]),
+    (r"\b(timer|alarm|reminder)\b.*(for|in)\s+\d+", ["set_timer"]),
+    (r"\bremind\s+me\b.*(in|after)\s+\d+", ["set_timer"]),
+    (r"\b(wake|alert)\s+me\b.*(in|after)\s+\d+", ["set_timer"]),
+    (r"\b\d+\s*(minute|second|hour)s?\s*(timer|reminder)\b", ["set_timer"]),
+    
+    # List/cancel timers
+    (r"\b(list|show|what|check).*(timer|alarm|reminder)", ["list_timers"]),
+    (r"\b(cancel|stop|delete|remove).*(timer|alarm|reminder)", ["cancel_timer"]),
+    
+    # Weather
+    (r"\b(weather|temperature|forecast|rain|snow|sunny|cloudy)\b", ["get_current_weather"]),
+    (r"\bhow.*(hot|cold|warm)\b.*\b(outside|today|tomorrow)\b", ["get_current_weather"]),
+    (r"\bwhat.*(weather|temperature)\b", ["get_current_weather"]),
+    
+    # Date/time
+    (r"\b(what|tell)\b.*(time|date|day)\b.*\b(is\s+it|today|now)\b", ["get_current_datetime"]),
+    (r"\bcurrent\s+(time|date|day)\b", ["get_current_datetime"]),
+    (r"\bwhat\s+time\s+is\s+it\b", ["get_current_datetime"]),
+    (r"\bwhat\s+day\s+is\s+(it|today)\b", ["get_current_datetime"]),
+    
+    # System info
+    (r"\b(system|server|cpu|memory|disk|gpu)\b.*(info|status|usage|stats)\b", ["get_system_info"]),
+    (r"\bhow.*(much|many)\b.*(memory|ram|disk|cpu|gpu)\b", ["get_system_info"]),
+    
+    # Escalate/deep thinking
+    (r"\b(think\s+deeply|ponder|research\s+this|thorough\s+analysis)\b", ["escalate_thinking"]),
+    (r"\b(deep\s+dive|really\s+think|carefully\s+consider)\b", ["escalate_thinking"]),
+]
+
+
+def detect_tool_hints(query: str) -> List[str]:
+    """
+    Analyze a query and return list of tools that should be exposed.
+    
+    Used when deterministic_tool_hinting is enabled - only matching tools
+    are exposed to the model, keeping it in conversation mode otherwise.
+    
+    Args:
+        query: The user's input text
+        
+    Returns:
+        List of tool names to expose (empty if none match)
+    """
+    query_lower = query.lower().strip()
+    matched_tools = set()
+    
+    for pattern, tools in TOOL_HINT_PATTERNS:
+        if re.search(pattern, query_lower, re.IGNORECASE):
+            matched_tools.update(tools)
+    
+    return list(matched_tools)
+
+
+# ============================================================================
 # STOPWORDS AND LIGHTWEIGHT NLP
 # ============================================================================
 
