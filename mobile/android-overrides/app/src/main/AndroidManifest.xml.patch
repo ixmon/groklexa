@@ -1,0 +1,30 @@
+<!-- 
+    AndroidManifest.xml Patch Instructions
+    
+    After running `npx cap add android`, add these permissions to AndroidManifest.xml
+    inside the <manifest> tag (before <application>):
+-->
+
+<!-- Required permissions - add before <application> tag -->
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+<uses-permission android:name="android.permission.INTERNET" />
+
+<!-- In the <application> tag, add this attribute: -->
+android:networkSecurityConfig="@xml/network_security_config"
+
+<!--
+    Example final structure:
+    
+    <manifest ...>
+        <uses-permission android:name="android.permission.RECORD_AUDIO" />
+        <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+        <uses-permission android:name="android.permission.INTERNET" />
+        
+        <application
+            android:networkSecurityConfig="@xml/network_security_config"
+            ... other attributes ...>
+            ...
+        </application>
+    </manifest>
+-->

@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: 'Groklexa',
   
   // For development: load from your Flask server
-  // Change this to your server's IP address
+  // ⚠️ CHANGE THIS to your server's IP address!
   server: {
     url: 'https://YOUR_SERVER_IP:5001',
     cleartext: false,  // We use HTTPS

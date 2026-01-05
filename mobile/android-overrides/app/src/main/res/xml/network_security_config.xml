@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Network Security Configuration for Groklexa Android app.
+    
+    This configuration allows:
+    - User-installed certificates to be trusted (for self-signed dev certs)
+    - Cleartext traffic for development (HTTP fallback)
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system"/>
+            <certificates src="user"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -35,28 +35,55 @@ server: {
 npx cap add android
 ```
 
-### 4. Open in Android Studio
+### 4. Apply Android overrides (required for mic + SSL)
+
+Copy the override files to enable microphone and self-signed certificate support:
+
+```bash
+# Copy MainActivity.java (handles permissions + SSL bypass)
+cp android-overrides/app/src/main/java/com/groklexa/app/MainActivity.java \
+   android/app/src/main/java/com/groklexa/app/MainActivity.java
+
+# Copy network security config
+mkdir -p android/app/src/main/res/xml
+cp android-overrides/app/src/main/res/xml/network_security_config.xml \
+   android/app/src/main/res/xml/network_security_config.xml
+```
+
+Then edit `android/app/src/main/AndroidManifest.xml`:
+
+1. Add permissions before the `<application>` tag:
+```xml
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+<uses-permission android:name="android.permission.INTERNET" />
+```
+
+2. Add network security config to the `<application>` tag:
+```xml
+<application
+    android:networkSecurityConfig="@xml/network_security_config"
+    ... other attributes ...>
+```
+
+### 5. Open in Android Studio
 
 ```bash
 npx cap open android
 ```
 
-### 5. Build and run
+### 6. Build and run
 
 In Android Studio:
 1. Wait for Gradle sync to complete
 2. Connect your phone via USB (enable USB debugging)
 3. Click the green "Run" button
 
-## Trusting the Self-Signed Certificate
+## Self-Signed Certificates
 
-Since your server uses a self-signed certificate:
+The `MainActivity.java` override includes SSL bypass for development. This allows the app to connect to servers with self-signed certificates without additional steps.
 
-1. On your phone, open Chrome and navigate to `https://YOUR_SERVER_IP:5001`
-2. Accept the security warning and proceed
-3. The certificate is now trusted for the Capacitor app
-
-Alternatively, for development, you can configure Android to trust all certificates (not recommended for production).
+**⚠️ Warning:** The SSL bypass should only be used for development. For production, use a proper CA-signed certificate.
 
 ## Troubleshooting
 
