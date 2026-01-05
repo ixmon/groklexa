@@ -64,3 +64,13 @@ static/voices/*.ogg
 # OS
 .DS_Store
 Thumbs.db
+
+# Node.js / Capacitor Mobile App
+mobile/node_modules/
+mobile/android/
+mobile/ios/
+mobile/.gradle/
+mobile/package-lock.json
+*.apk
+*.aab
+*.ipa
